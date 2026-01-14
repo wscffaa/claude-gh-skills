@@ -2,7 +2,7 @@
 name: gh-project-implement
 description: |
   自动化实现 GitHub Project 下所有 Open Issues。按优先级分批（P0 → P1 → P2 → P3），
-  每个 issue 使用独立 worktree + Claude 会话，支持即时 Review/合并和失败重试。
+  每个 issue 使用独立 worktree + Claude 会话，支持并发执行、即时 Review/合并和失败重试。
   触发条件：
   - /gh-project-implement <project_number>
   - 用户提到"实现项目"、"批量实现"、"project implement"
@@ -24,10 +24,25 @@ description: |
 
 1. **Project Issues 获取** - 获取指定 Project 下所有 Open Issues
 2. **优先级分批执行** - 按 P0 → P1 → P2 → P3 分批，每批内按依赖排序
-3. **Worktree 隔离** - 每个 issue 使用独立 worktree + Claude 会话
-4. **即时合并** - 实现 → Review → 合并 → 下一个
-5. **失败重试** - 失败立即重试，最多 N 次（默认 3）
-6. **进度追踪** - 控制台实时进度 + 完成报告
+3. **并发执行** - 批次内依赖感知的 DAG 并发调度
+4. **自适应并发数** - 根据优先级和依赖关系动态调整并发数
+5. **Worktree 隔离** - 每个 issue 使用独立 worktree + Claude 会话
+6. **即时合并** - 实现 → Review → 合并 → 下一个
+7. **失败重试** - 失败立即重试，最多 N 次（默认 3）
+8. **进度追踪** - 控制台实时进度 + 完成报告
+
+## 自适应并发数
+
+根据优先级和依赖关系动态计算并发数：
+
+| 优先级 | 基础并发数 | 说明 |
+|--------|-----------|------|
+| P0 | 4 | 紧急任务，高并发 |
+| P1 | 3 | 中等优先级 |
+| P2 | 2 | 一般任务 |
+| P3 | 1 | 低优先级，节省资源 |
+
+**依赖调整**：批次内存在依赖关系时，并发数 -1（避免过多等待）
 
 ## 工作流程
 
@@ -48,21 +63,33 @@ python3 scripts/priority_batcher.py --json
 
 按 P0 → P1 → P2 → P3 分批，每批内按依赖关系拓扑排序。
 
-### Phase 3: 批量执行
+输出格式（包含依赖信息）：
+```json
+{
+  "batches": [
+    {
+      "priority": "p0",
+      "issues": [
+        {"number": 42, "title": "xxx", "dependencies": []},
+        {"number": 43, "title": "yyy", "dependencies": [42]}
+      ]
+    }
+  ]
+}
+```
+
+### Phase 3: 并发批量执行
 
 ```bash
 python3 scripts/batch_executor.py --input <batcher_output.json> --max-retries 3
 ```
 
-对每个 issue：
-1. 创建 worktree: `{repo}-worktrees/issue-{number}`
-2. 启动独立会话: `claude -p "/gh-issue-implement {number}"`
-3. 获取 PR 编号: `gh pr list --head issue-{number}`
-4. Review PR: `claude -p "/gh-pr-review {pr_number}"`
-5. 合并 PR: `gh pr merge {pr_number} --squash --delete-branch`
-6. 清理 worktree
-
-失败时自动重试（最多 N 次），重试前清理 worktree 和远程分支。
+对每个批次并发执行（DAG 调度）：
+1. 计算自适应并发数
+2. 获取可执行的 issues（依赖已完成）
+3. 并发创建 worktree 并启动 Claude 会话
+4. 完成后立即 Review + Merge
+5. 等待所有任务完成后进入下一批次
 
 ## 脚本
 
@@ -77,7 +104,7 @@ python3 scripts/get_project_issues.py --project 1 --owner wscffaa --json
 
 ### priority_batcher.py
 
-按优先级分批并按依赖排序。
+按优先级分批并按依赖排序，输出包含依赖信息。
 
 ```bash
 cat issues.json | python3 scripts/priority_batcher.py --json
@@ -86,11 +113,12 @@ python3 scripts/priority_batcher.py --input issues.json --json
 
 ### batch_executor.py
 
-批量执行引擎。
+并发批量执行引擎。
 
 ```bash
 cat batches.json | python3 scripts/batch_executor.py
 python3 scripts/batch_executor.py --input batches.json --max-retries 5
+python3 scripts/batch_executor.py --input batches.json --max-workers 2  # 覆盖自适应并发数
 ```
 
 ## 输出示例
@@ -98,16 +126,19 @@ python3 scripts/batch_executor.py --input batches.json --max-retries 5
 ```
 🚀 开始处理 (共 10 个 issues)
 
-📦 P0 批次 (2 issues)
+📦 P0 批次 (2 issues, 并发=4)
 [1/10] 正在处理 Issue #42: 添加登录功能 (P0)
-✅ Issue #42 已完成，PR #56 已合并 (耗时 2m30s)
 [2/10] 正在处理 Issue #43: 修复 bug (P0)
 ✅ Issue #43 已完成，PR #57 已合并 (耗时 1m15s)
+✅ Issue #42 已完成，PR #56 已合并 (耗时 2m30s)
 📦 P0 批次完成 (2/2)
 
-📦 P1 批次 (3 issues)
+📦 P1 批次 (3 issues, 并发=2)
 [3/10] 正在处理 Issue #44: 添加测试 (P1)
+[4/10] 正在处理 Issue #45: 重构代码 (P1)
 🔄 Issue #44 第 1/3 次重试...
+✅ Issue #45 已完成，PR #59 已合并 (耗时 3m10s)
+[5/10] 正在处理 Issue #46: 更新文档 (P1)
 ✅ Issue #44 已完成，PR #58 已合并 (耗时 5m20s)
 ...
 
@@ -115,13 +146,13 @@ python3 scripts/batch_executor.py --input batches.json --max-retries 5
 
 | Issue | Title | PR | Status | Time |
 |-------|-------|-----|--------|------|
-| #42 | 添加登录功能 | #56 | ✅ Merged | 2m30s |
-| #43 | 修复 bug | #57 | ✅ Merged | 1m15s |
-| #44 | 添加测试 | #58 | ✅ Merged | 5m20s |
+| #42 | 添加登录功能 | #56 | completed | 2m30s |
+| #43 | 修复 bug | #57 | completed | 1m15s |
+| #44 | 添加测试 | #58 | completed | 5m20s |
 ...
 
 总计: 10 issues, 9 成功, 1 失败
-总耗时: 25m30s
+总耗时: 15m30s (并发加速)
 ```
 
 ## 技术约束
@@ -137,8 +168,8 @@ python3 scripts/batch_executor.py --input batches.json --max-retries 5
 ├── SKILL.md              # 本文件
 └── scripts/
     ├── get_project_issues.py   # 获取 Project Issues
-    ├── priority_batcher.py     # 优先级分批
-    ├── batch_executor.py       # 批量执行引擎
+    ├── priority_batcher.py     # 优先级分批（含依赖信息）
+    ├── batch_executor.py       # 并发批量执行引擎
     ├── status_sync.py          # Project 状态同步
     └── worktree.py             # Git Worktree 管理
 ```

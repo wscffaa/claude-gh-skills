@@ -17,8 +17,14 @@
     --json: JSON 输出:
         {
           "batches": [
-            {"priority": "p0", "issues": [42, 43]},
-            {"priority": "p1", "issues": [44, 45, 46]}
+            {
+              "priority": "p0",
+              "issues": [
+                {"number": 42, "title": "xxx", "dependencies": []},
+                {"number": 43, "title": "yyy", "dependencies": [42]}
+              ]
+            },
+            {"priority": "p1", "issues": [...]}
           ],
           "warnings": ["跨批次依赖: #45 (P1) 依赖 #50 (P2)"]
         }
@@ -176,6 +182,7 @@ def main():
         sys.exit(1)
 
     prio_by_issue: dict[int, str] = {}
+    title_by_issue: dict[int, str] = {}
     for raw in raw_issues:
         if not isinstance(raw, dict):
             continue
@@ -183,6 +190,7 @@ def main():
         if not isinstance(n, int):
             continue
         prio = _normalize_priority(raw.get("priority"), warnings, n)
+        title_by_issue[n] = str(raw.get("title", ""))
 
         existing = prio_by_issue.get(n)
         if existing is None:
@@ -215,10 +223,21 @@ def main():
                 )
 
     batches: list[dict[str, Any]] = []
+    all_issue_set = set(prio_by_issue.keys())
     for p in PRIORITY_ORDER:
         nodes = sorted([n for n, prio in prio_by_issue.items() if prio == p])
         ordered = _topo_sort_with_fallback(nodes, deps_by_issue, p, warnings)
-        batches.append({"priority": p, "issues": ordered})
+        batch_set = set(ordered)
+        # 构建详细的 issue 对象，dependencies 只包含同批次内的依赖
+        issues_detail = []
+        for n in ordered:
+            deps_in_batch = sorted((deps_by_issue.get(n) or set()) & batch_set)
+            issues_detail.append({
+                "number": n,
+                "title": title_by_issue.get(n, ""),
+                "dependencies": deps_in_batch,
+            })
+        batches.append({"priority": p, "issues": issues_detail})
 
     if args.json:
         print(json.dumps({"batches": batches, "warnings": warnings}, ensure_ascii=False, indent=2))
@@ -228,7 +247,7 @@ def main():
     for b in batches:
         issues = b["issues"]
         if issues:
-            nums = " ".join(f"#{n}" for n in issues)
+            nums = " ".join(f"#{i['number']}" for i in issues)
         else:
             nums = "(空)"
         print(f"- {b['priority']}: {nums}")

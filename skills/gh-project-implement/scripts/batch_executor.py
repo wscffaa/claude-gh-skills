@@ -1,22 +1,27 @@
 #!/usr/bin/env python3
 """
-根据 priority_batcher.py --json 的输出，按批次串行执行 issue。
+根据 priority_batcher.py --json 的输出，按批次并发执行 issue。
 
 功能:
 - 从 stdin 或 --input 文件读取 JSON（priority_batcher.py --json 输出）
-- 遍历每个批次与 issue，串行执行
+- 每批次内支持并发执行（DAG 调度，依赖感知）
+- 自适应并发数：根据优先级和依赖关系动态调整
+  - P0: max_workers=4（紧急，高并发）
+  - P1: max_workers=3
+  - P2: max_workers=2
+  - P3: max_workers=1
+  - 有依赖时并发数 -1
 - 复用 worktree.py 脚本进行 worktree 管理（同目录下的 worktree.py）
 - 每个 issue 创建独立 worktree: {repo}-worktrees/issue-{number}
 - 使用 subprocess 启动独立 Claude 会话: claude -p "/gh-issue-implement {number}"
 - 失败支持重试：清理 worktree 与远程分支后重试（--max-retries）
 - 若检测到对应 PR（head=issue-{number}），自动执行 PR Review（claude -p "/gh-pr-review {pr_number}"）并合并（gh pr merge --squash --delete-branch）
-- 等待独立会话完成后再处理下一个 issue
 - issue 完成后自动清理 worktree
 - Ctrl+C（SIGINT）时清理当前 worktree 并输出已完成报告
 
 输出格式:
 - 开始处理: 🚀 开始处理 (共 {total} 个 issues)
-- 每个批次开始: 📦 {PRIORITY} 批次 ({count} issues)
+- 每个批次开始: 📦 {PRIORITY} 批次 ({count} issues, 并发={workers})
 - 每个 issue 开始: [2/10] 正在处理 Issue #42: xxx (P1)
 - 每个 issue 完成: ✅ Issue #42 已完成，PR #123 已合并 (耗时 2m30s)
 - 每个 issue 失败: ❌ Issue #42 失败 (尝试 2/4): xxx
@@ -27,13 +32,16 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import signal
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from pathlib import Path
+from threading import Lock
 from typing import Any, Optional, TextIO
 
 
@@ -44,6 +52,8 @@ DEFAULT_WORKTREE_SCRIPT = Path(__file__).parent / "worktree.py"
 class IssueSpec:
     number: int
     priority: str
+    title: str = ""
+    dependencies: list[int] = field(default_factory=list)
 
 
 @dataclass
@@ -66,6 +76,111 @@ class ExecState:
     current_worktree_path: Optional[Path] = None
     current_process: Optional[subprocess.Popen] = None
     last_process: Optional[subprocess.Popen] = None
+    # 并发执行相关
+    active_issues: set[int] = field(default_factory=set)
+    active_processes: dict[int, subprocess.Popen] = field(default_factory=dict)
+    active_worktrees: dict[int, Path] = field(default_factory=dict)
+    lock: Lock = field(default_factory=Lock)
+
+
+# ==================== 自适应并发数计算 ====================
+
+def _calculate_max_workers(priority: str, batch_size: int, has_dependencies: bool) -> int:
+    """
+    根据优先级和依赖关系计算最大并发数。
+
+    规则：
+    - P0: 基础并发数 4（紧急任务，尽快完成）
+    - P1: 基础并发数 3
+    - P2: 基础并发数 2
+    - P3: 基础并发数 1（低优先级，节省资源）
+    - 有依赖时：并发数 -1（避免过多等待）
+    - 最终取 min(base, batch_size)
+    """
+    base = {
+        "p0": 4,
+        "p1": 3,
+        "p2": 2,
+        "p3": 1,
+    }.get(priority.lower(), 2)
+
+    if has_dependencies:
+        base = max(1, base - 1)
+
+    return max(1, min(base, batch_size))
+
+
+# ==================== DAG 调度器 ====================
+
+class DagScheduler:
+    """
+    依赖感知的 DAG 调度器。
+
+    - 维护 pending/in_progress/completed 三个状态集合
+    - get_ready_issues() 返回所有依赖已完成的待处理 issue
+    - 支持并发调用（线程安全）
+    """
+
+    def __init__(self, specs: list[IssueSpec]):
+        self.specs = {s.number: s for s in specs}
+        self.completed: set[int] = set()
+        self.failed: set[int] = set()
+        self.in_progress: set[int] = set()
+        self.pending: set[int] = set(s.number for s in specs)
+        self._lock = Lock()
+
+    def get_ready_issues(self) -> list[int]:
+        """返回所有依赖已完成且未开始的 issue 编号"""
+        with self._lock:
+            ready = []
+            for num in list(self.pending):
+                spec = self.specs[num]
+                # 依赖必须全部完成（不含失败）
+                deps_met = all(
+                    dep in self.completed
+                    for dep in spec.dependencies
+                    if dep in self.specs
+                )
+                if deps_met:
+                    ready.append(num)
+            return ready
+
+    def mark_started(self, num: int) -> bool:
+        """标记 issue 为进行中，返回是否成功"""
+        with self._lock:
+            if num not in self.pending:
+                return False
+            self.pending.discard(num)
+            self.in_progress.add(num)
+            return True
+
+    def mark_completed(self, num: int):
+        """标记 issue 为已完成"""
+        with self._lock:
+            self.in_progress.discard(num)
+            self.completed.add(num)
+
+    def mark_failed(self, num: int):
+        """标记 issue 为失败"""
+        with self._lock:
+            self.in_progress.discard(num)
+            self.failed.add(num)
+
+    def is_done(self) -> bool:
+        """检查是否所有 issue 都已处理"""
+        with self._lock:
+            return len(self.pending) == 0 and len(self.in_progress) == 0
+
+    def has_blocked_issues(self) -> list[int]:
+        """返回因依赖失败而被阻塞的 issue"""
+        with self._lock:
+            blocked = []
+            for num in list(self.pending):
+                spec = self.specs[num]
+                # 如果任一依赖失败，则该 issue 被阻塞
+                if any(dep in self.failed for dep in spec.dependencies if dep in self.specs):
+                    blocked.append(num)
+            return blocked
 
 
 def _read_json_input(path: Optional[str]) -> dict[str, Any]:
@@ -94,6 +209,15 @@ def _read_json_input(path: Optional[str]) -> dict[str, Any]:
 
 
 def _extract_specs(data: dict[str, Any]) -> tuple[list[IssueSpec], list[str]]:
+    """
+    从 priority_batcher.py --json 输出中提取 IssueSpec 列表。
+
+    支持两种格式：
+    1. 新格式（推荐）：issues 为对象数组
+       {"number": 42, "title": "xxx", "dependencies": [41]}
+    2. 旧格式（兼容）：issues 为整数数组
+       [42, 43, 44]
+    """
     batches = data.get("batches")
     if not isinstance(batches, list):
         print("Error: 输入 JSON 缺少 batches 列表（priority_batcher.py --json 输出）", file=sys.stderr)
@@ -112,7 +236,20 @@ def _extract_specs(data: dict[str, Any]) -> tuple[list[IssueSpec], list[str]]:
             continue
         for raw in raw_issues:
             number: Optional[int] = None
-            if isinstance(raw, int):
+            title: str = ""
+            dependencies: list[int] = []
+
+            # 新格式：对象
+            if isinstance(raw, dict):
+                number = raw.get("number")
+                if not isinstance(number, int):
+                    continue
+                title = str(raw.get("title", ""))
+                raw_deps = raw.get("dependencies", [])
+                if isinstance(raw_deps, list):
+                    dependencies = [d for d in raw_deps if isinstance(d, int)]
+            # 旧格式：整数
+            elif isinstance(raw, int):
                 number = raw
             elif isinstance(raw, str) and raw.strip().isdigit():
                 number = int(raw.strip())
@@ -123,7 +260,12 @@ def _extract_specs(data: dict[str, Any]) -> tuple[list[IssueSpec], list[str]]:
                 warnings.append(f"重复 issue: #{number} 已跳过重复条目")
                 continue
             seen.add(number)
-            specs.append(IssueSpec(number=number, priority=priority or "p2"))
+            specs.append(IssueSpec(
+                number=number,
+                priority=priority or "p2",
+                title=title,
+                dependencies=dependencies,
+            ))
 
     return specs, warnings
 
@@ -441,15 +583,349 @@ def _print_report(results: list[IssueResult], interrupted: bool) -> None:
         print(f"- 中断位置: {nums}")
 
 
+# ==================== 并发执行核心函数 ====================
+
+def _execute_single_issue(
+    spec: IssueSpec,
+    idx: int,
+    total: int,
+    prio_label: str,
+    repo: Optional[str],
+    repo_dir: Path,
+    worktree_script: Path,
+    max_retries: int,
+    force_cleanup: bool,
+    tty_stdin: Optional[TextIO],
+    state: ExecState,
+    print_lock: Lock,
+) -> IssueResult:
+    """
+    执行单个 issue 的完整流程（worktree → claude → PR review → merge）。
+    线程安全，可用于并发执行。
+    """
+    issue_number = spec.number
+    priority = spec.priority or "p2"
+    title = spec.title or ""
+
+    issue_start = time.monotonic()
+    observed_pr_number: Optional[int] = None
+    last_error: str = ""
+
+    # 如果没有 title，尝试获取
+    if not title:
+        title = _run_gh_issue_title(issue_number, repo, cwd=repo_dir) or ""
+    title_display = title if title else "(无法获取标题)"
+
+    with print_lock:
+        print(
+            f"[{idx}/{total}] 正在处理 Issue #{issue_number}: {title_display} ({prio_label})",
+            flush=True,
+        )
+
+    # 注册到 state
+    with state.lock:
+        state.active_issues.add(issue_number)
+
+    max_attempts = 1 + max_retries
+    attempt_details: list[str] = []
+    final_status = "failed"
+    final_returncode: Optional[int] = None
+    attempts = 0
+
+    for attempt in range(1, max_attempts + 1):
+        if state.interrupted:
+            final_status = "interrupted"
+            break
+
+        attempts = attempt
+        final_returncode = None
+        worktree_path: Optional[Path] = None
+
+        if attempt > 1:
+            retry_idx = attempt - 1
+            with print_lock:
+                print(
+                    f"🔄 Issue #{issue_number} 第 {retry_idx}/{max_retries} 次重试...",
+                    flush=True,
+                )
+
+            # 清理之前的 worktree
+            existing_path = _get_worktree_path(worktree_script, issue_number, repo_dir, state)
+            if existing_path:
+                ok, detail = _remove_worktree(worktree_script, issue_number, repo_dir, state)
+                if not ok:
+                    ok2, detail2 = _force_remove_worktree(issue_number, existing_path, repo_dir, state)
+                    if ok2:
+                        ok, detail = True, ""
+                    else:
+                        detail = f"{detail}; {detail2}"
+                if not ok:
+                    with print_lock:
+                        print(f"Warning: worktree 清理失败: #{issue_number}: {detail}", file=sys.stderr)
+
+            # 清理远程分支
+            ok_rb, detail_rb = _cleanup_remote_branch(issue_number, repo_dir, state)
+            if not ok_rb:
+                with print_lock:
+                    print(f"Warning: 远程分支清理失败: #{issue_number}: {detail_rb}", file=sys.stderr)
+
+        try:
+            worktree_path = _create_worktree(worktree_script, issue_number, repo_dir, state)
+            with state.lock:
+                state.active_worktrees[issue_number] = worktree_path
+
+            rc = _run_claude(issue_number, worktree_path, tty_stdin, state)
+            if state.interrupted:
+                final_status = "interrupted"
+                final_returncode = rc
+                break
+
+            if rc == 0:
+                pr_number = _get_pr_number(issue_number, repo, cwd=repo_dir, state=state)
+                if pr_number:
+                    observed_pr_number = pr_number
+                    review_rc = _run_pr_review(pr_number, worktree_path, tty_stdin, state)
+                    if review_rc != 0:
+                        last_error = f"pr review exit={review_rc}"
+                        attempt_details.append(f"attempt {attempt}: {last_error}")
+                        final_returncode = review_rc
+                    else:
+                        ok, detail = _merge_pr(pr_number, repo, cwd=repo_dir, state=state)
+                        if ok:
+                            final_status = "completed"
+                            final_returncode = rc
+                            break
+                        last_error = detail
+                        attempt_details.append(f"attempt {attempt}: {detail}")
+                else:
+                    observed_pr_number = None
+                    final_status = "completed"
+                    final_returncode = rc
+                    break
+            else:
+                last_error = f"claude exit={rc}"
+                attempt_details.append(f"attempt {attempt}: {last_error}")
+                final_returncode = rc
+
+        except KeyboardInterrupt:
+            state.interrupted = True
+            final_status = "interrupted"
+            break
+        except Exception as e:
+            last_error = str(e)
+            attempt_details.append(f"attempt {attempt}: {e}")
+        finally:
+            if worktree_path:
+                ok, detail = _remove_worktree(worktree_script, issue_number, repo_dir, state)
+                if not ok and (force_cleanup or state.interrupted):
+                    ok2, detail2 = _force_remove_worktree(issue_number, worktree_path, repo_dir, state)
+                    if ok2:
+                        ok, detail = True, ""
+                    else:
+                        detail = f"{detail}; {detail2}"
+                if not ok:
+                    with print_lock:
+                        print(f"Warning: worktree 清理失败: #{issue_number}: {detail}", file=sys.stderr)
+
+            with state.lock:
+                state.active_worktrees.pop(issue_number, None)
+
+        if final_status == "completed" or state.interrupted:
+            break
+
+    elapsed_sec = time.monotonic() - issue_start
+    detail = "\n".join(attempt_details).strip()
+    if final_status == "failed" and not last_error:
+        last_error = _last_nonempty_line(detail) or "-"
+
+    # 从 state 注销
+    with state.lock:
+        state.active_issues.discard(issue_number)
+
+    result = IssueResult(
+        number=issue_number,
+        priority=priority,
+        title=title,
+        status=final_status,
+        pr_number=observed_pr_number,
+        elapsed_sec=elapsed_sec,
+        attempts=attempts,
+        returncode=final_returncode,
+        detail=detail,
+    )
+
+    # 打印结果
+    with print_lock:
+        if result.status == "completed":
+            pr_text = f"，PR #{result.pr_number} 已合并" if result.pr_number else ""
+            print(
+                f"✅ Issue #{issue_number} 已完成{pr_text} (耗时 {_format_duration(result.elapsed_sec)})",
+                flush=True,
+            )
+        elif result.status == "failed":
+            print(
+                f"❌ Issue #{issue_number} 失败 (尝试 {attempts}/{max_attempts}): {last_error}",
+                flush=True,
+            )
+
+    return result
+
+
+def _execute_batch_concurrent(
+    batch_specs: list[IssueSpec],
+    batch_priority: str,
+    start_idx: int,
+    total: int,
+    repo: Optional[str],
+    repo_dir: Path,
+    worktree_script: Path,
+    max_retries: int,
+    force_cleanup: bool,
+    tty_stdin: Optional[TextIO],
+    state: ExecState,
+    results: list[IssueResult],
+    results_lock: Lock,
+) -> int:
+    """
+    并发执行一个批次内的所有 issues（DAG 调度，依赖感知）。
+    返回完成的 issue 数量。
+    """
+    if not batch_specs:
+        return 0
+
+    prio_label = batch_priority.strip().upper() if batch_priority else "P2"
+
+    # 检查是否有依赖
+    has_dependencies = any(spec.dependencies for spec in batch_specs)
+
+    # 计算自适应并发数
+    max_workers = _calculate_max_workers(batch_priority, len(batch_specs), has_dependencies)
+
+    print(f"📦 {prio_label} 批次 ({len(batch_specs)} issues, 并发={max_workers})", flush=True)
+
+    # 创建 DAG 调度器
+    scheduler = DagScheduler(batch_specs)
+    print_lock = Lock()
+    batch_completed = 0
+    current_idx = start_idx
+
+    # 创建 issue number -> spec 映射
+    spec_map = {s.number: s for s in batch_specs}
+    # 创建 issue number -> idx 映射
+    idx_map = {}
+    for i, spec in enumerate(batch_specs):
+        idx_map[spec.number] = start_idx + i
+
+    def execute_issue(issue_num: int) -> IssueResult:
+        """执行单个 issue 的包装函数"""
+        spec = spec_map[issue_num]
+        idx = idx_map[issue_num]
+        return _execute_single_issue(
+            spec=spec,
+            idx=idx,
+            total=total,
+            prio_label=prio_label,
+            repo=repo,
+            repo_dir=repo_dir,
+            worktree_script=worktree_script,
+            max_retries=max_retries,
+            force_cleanup=force_cleanup,
+            tty_stdin=tty_stdin,
+            state=state,
+            print_lock=print_lock,
+        )
+
+    # 使用 ThreadPoolExecutor 并发执行
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures: dict[int, Any] = {}  # issue_number -> Future
+
+        while not scheduler.is_done() and not state.interrupted:
+            # 获取可以开始的 issues
+            ready_issues = scheduler.get_ready_issues()
+
+            # 提交新任务
+            for issue_num in ready_issues:
+                if issue_num not in futures and scheduler.mark_started(issue_num):
+                    future = executor.submit(execute_issue, issue_num)
+                    futures[issue_num] = future
+
+            # 检查已完成的任务
+            completed_futures = []
+            for issue_num, future in list(futures.items()):
+                if future.done():
+                    completed_futures.append((issue_num, future))
+
+            for issue_num, future in completed_futures:
+                try:
+                    result = future.result()
+                    with results_lock:
+                        results.append(result)
+
+                    if result.status == "completed":
+                        scheduler.mark_completed(issue_num)
+                        batch_completed += 1
+                    else:
+                        scheduler.mark_failed(issue_num)
+                except Exception as e:
+                    # 异常情况，标记为失败
+                    scheduler.mark_failed(issue_num)
+                    with print_lock:
+                        print(f"❌ Issue #{issue_num} 执行异常: {e}", file=sys.stderr)
+
+                del futures[issue_num]
+
+            # 检查是否有被阻塞的 issues
+            blocked = scheduler.has_blocked_issues()
+            if blocked and not futures and not ready_issues:
+                # 所有可执行的都完成了，但还有被阻塞的
+                with print_lock:
+                    blocked_nums = " ".join(f"#{n}" for n in blocked)
+                    print(f"⚠️ 以下 issues 因依赖失败而跳过: {blocked_nums}", flush=True)
+
+                # 标记被阻塞的 issues 为 skipped
+                for issue_num in blocked:
+                    scheduler.mark_failed(issue_num)
+                    spec = spec_map[issue_num]
+                    with results_lock:
+                        results.append(IssueResult(
+                            number=issue_num,
+                            priority=spec.priority,
+                            title=spec.title,
+                            status="skipped",
+                            detail="依赖的 issue 失败",
+                        ))
+                break
+
+            # 短暂休眠避免 CPU 占用过高
+            if futures:
+                time.sleep(0.1)
+
+        # 等待所有正在执行的任务完成（中断时也要等待）
+        for issue_num, future in futures.items():
+            try:
+                result = future.result(timeout=1.0)
+                with results_lock:
+                    results.append(result)
+                if result.status == "completed":
+                    batch_completed += 1
+            except Exception:
+                pass
+
+    if not state.interrupted:
+        print(f"📦 {prio_label} 批次完成 ({batch_completed}/{len(batch_specs)})", flush=True)
+
+    return batch_completed
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="按 priority 批次串行执行 Issues（worktree + claude）")
+    parser = argparse.ArgumentParser(description="按 priority 批次并发执行 Issues（worktree + claude）")
     parser.add_argument("--input", help="priority_batcher.py --json 的输出文件（默认从 stdin 读取）")
     parser.add_argument("--repo", help="用于 gh issue view 的仓库（默认使用当前仓库）")
     parser.add_argument("--repo-dir", default=".", help="执行 git/gh/worktree 的仓库目录（默认当前目录）")
     parser.add_argument(
         "--worktree-script",
         default=str(DEFAULT_WORKTREE_SCRIPT),
-        help="worktree.py 脚本路径（默认使用 ~/.claude/skills/gh-issue-orchestrator/scripts/worktree.py）",
+        help="worktree.py 脚本路径",
     )
     parser.add_argument(
         "--force-cleanup",
@@ -461,6 +937,12 @@ def main() -> None:
         type=int,
         default=3,
         help="每个 issue 失败后的最大重试次数（默认 3）",
+    )
+    parser.add_argument(
+        "--max-workers",
+        type=int,
+        default=0,
+        help="覆盖自适应并发数，0 表示使用自适应计算（默认 0）",
     )
     args = parser.parse_args()
 
@@ -477,15 +959,19 @@ def main() -> None:
 
     state = ExecState()
     results: list[IssueResult] = []
+    results_lock = Lock()
     tty_stdin = _open_tty_stdin()
 
     def _handle_sigint(_signum, _frame):
         state.interrupted = True
-        if state.current_process and state.current_process.poll() is None:
-            try:
-                state.current_process.send_signal(signal.SIGINT)
-            except Exception:
-                pass
+        # 向所有活跃进程发送 SIGINT
+        with state.lock:
+            for proc in state.active_processes.values():
+                if proc and proc.poll() is None:
+                    try:
+                        proc.send_signal(signal.SIGINT)
+                    except Exception:
+                        pass
         raise KeyboardInterrupt
 
     signal.signal(signal.SIGINT, _handle_sigint)
@@ -508,6 +994,7 @@ def main() -> None:
 
     print(f"🚀 开始处理 (共 {total} 个 issues)", flush=True)
 
+    # 按优先级分组
     batches: list[tuple[str, list[IssueSpec]]] = []
     for spec in specs:
         priority = spec.priority or "p2"
@@ -517,195 +1004,36 @@ def main() -> None:
             batches[-1][1].append(spec)
 
     try:
-        idx = 0
+        idx = 1
         for batch_priority, batch_specs in batches:
             if state.interrupted:
                 break
 
-            prio_label = batch_priority.strip().upper() if batch_priority else "P2"
-            print(f"📦 {prio_label} 批次 ({len(batch_specs)} issues)", flush=True)
+            # 并发执行批次
+            _execute_batch_concurrent(
+                batch_specs=batch_specs,
+                batch_priority=batch_priority,
+                start_idx=idx,
+                total=total,
+                repo=args.repo,
+                repo_dir=repo_dir,
+                worktree_script=worktree_script,
+                max_retries=args.max_retries,
+                force_cleanup=args.force_cleanup,
+                tty_stdin=tty_stdin,
+                state=state,
+                results=results,
+                results_lock=results_lock,
+            )
 
-            batch_completed = 0
-            for spec in batch_specs:
-                idx += 1
-                if state.interrupted:
-                    break
-
-                issue_number = spec.number
-                priority = spec.priority or "p2"
-
-                issue_start = time.monotonic()
-                observed_pr_number: Optional[int] = None
-                last_error: str = ""
-
-                title = _run_gh_issue_title(issue_number, args.repo, cwd=repo_dir) or ""
-                title_display = title if title else "(无法获取标题)"
-
-                print(
-                    f"[{idx}/{total}] 正在处理 Issue #{issue_number}: {title_display} ({prio_label})",
-                    flush=True,
-                )
-
-                state.current_issue = issue_number
-                max_attempts = 1 + args.max_retries
-                attempt_details: list[str] = []
-                final_status = "failed"
-                final_returncode: Optional[int] = None
-                attempts = 0
-
-                for attempt in range(1, max_attempts + 1):
-                    attempts = attempt
-                    final_returncode = None
-                    worktree_path: Optional[Path] = None
-
-                    if attempt > 1:
-                        retry_idx = attempt - 1
-                        print(
-                            f"🔄 Issue #{issue_number} 第 {retry_idx}/{args.max_retries} 次重试...",
-                            flush=True,
-                        )
-
-                        existing_path = _get_worktree_path(worktree_script, issue_number, repo_dir, state)
-                        if existing_path:
-                            ok, detail = _remove_worktree(worktree_script, issue_number, repo_dir, state)
-                            if not ok:
-                                ok2, detail2 = _force_remove_worktree(issue_number, existing_path, repo_dir, state)
-                                if ok2:
-                                    ok, detail = True, ""
-                                else:
-                                    detail = f"{detail}; {detail2}"
-                            if not ok:
-                                print(f"Warning: worktree 清理失败: #{issue_number}: {detail}", file=sys.stderr)
-
-                        ok_rb, detail_rb = _cleanup_remote_branch(issue_number, repo_dir, state)
-                        if not ok_rb:
-                            print(f"Warning: 远程分支清理失败: #{issue_number}: {detail_rb}", file=sys.stderr)
-
-                    try:
-                        worktree_path = _create_worktree(worktree_script, issue_number, repo_dir, state)
-                        state.current_worktree_path = worktree_path
-
-                        rc = _run_claude(issue_number, worktree_path, tty_stdin, state)
-                        if state.interrupted:
-                            final_status = "interrupted"
-                            final_returncode = rc
-                            break
-
-                        if rc == 0:
-                            pr_number = _get_pr_number(issue_number, args.repo, cwd=repo_dir, state=state)
-                            if pr_number:
-                                observed_pr_number = pr_number
-                                review_rc = _run_pr_review(pr_number, worktree_path, tty_stdin, state)
-                                if review_rc != 0:
-                                    last_error = f"pr review exit={review_rc}"
-                                    attempt_details.append(f"attempt {attempt}: {last_error}")
-                                    final_returncode = review_rc
-                                else:
-                                    ok, detail = _merge_pr(pr_number, args.repo, cwd=repo_dir, state=state)
-                                    if ok:
-                                        final_status = "completed"
-                                        final_returncode = rc
-                                        break
-                                    last_error = detail
-                                    attempt_details.append(f"attempt {attempt}: {detail}")
-                            else:
-                                observed_pr_number = None
-                                final_status = "completed"
-                                final_returncode = rc
-                                break
-                        else:
-                            last_error = f"claude exit={rc}"
-                            attempt_details.append(f"attempt {attempt}: {last_error}")
-                            final_returncode = rc
-
-                    except KeyboardInterrupt:
-                        state.interrupted = True
-                        proc = state.current_process or state.last_process
-                        if proc and proc.poll() is None:
-                            _stop_process(proc, timeout_sec=2.0)
-                        if not worktree_path:
-                            worktree_path = _get_worktree_path(worktree_script, issue_number, repo_dir, state)
-                        final_status = "interrupted"
-                        break
-                    except Exception as e:
-                        last_error = str(e)
-                        attempt_details.append(f"attempt {attempt}: {e}")
-                    finally:
-                        if worktree_path:
-                            ok, detail = _remove_worktree(worktree_script, issue_number, repo_dir, state)
-                            if not ok and (args.force_cleanup or state.interrupted):
-                                ok2, detail2 = _force_remove_worktree(issue_number, worktree_path, repo_dir, state)
-                                if ok2:
-                                    ok, detail = True, ""
-                                else:
-                                    detail = f"{detail}; {detail2}"
-                            if not ok:
-                                print(f"Warning: worktree 清理失败: #{issue_number}: {detail}", file=sys.stderr)
-
-                        state.current_worktree_path = None
-
-                    if final_status == "completed" or state.interrupted:
-                        break
-
-                    if attempt < max_attempts:
-                        continue
-
-                elapsed_sec = time.monotonic() - issue_start
-                detail = "\n".join(attempt_details).strip()
-                if final_status == "failed" and not last_error:
-                    last_error = _last_nonempty_line(detail) or "-"
-
-                results.append(
-                    IssueResult(
-                        number=issue_number,
-                        priority=priority,
-                        title=title,
-                        status=final_status,
-                        pr_number=observed_pr_number,
-                        elapsed_sec=elapsed_sec,
-                        attempts=attempts,
-                        returncode=final_returncode,
-                        detail=detail,
-                    )
-                )
-
-                state.current_issue = None
-
-                if results and results[-1].number == issue_number and results[-1].status == "completed":
-                    pr_text = f"，PR #{results[-1].pr_number} 已合并" if results[-1].pr_number else ""
-                    print(
-                        f"✅ Issue #{issue_number} 已完成{pr_text} (耗时 {_format_duration(results[-1].elapsed_sec)})",
-                        flush=True,
-                    )
-                    batch_completed += 1
-                elif results and results[-1].number == issue_number and results[-1].status == "failed":
-                    print(
-                        f"❌ Issue #{issue_number} 失败 (尝试 {attempts}/{max_attempts}): {last_error}",
-                        flush=True,
-                    )
-
-                if state.interrupted:
-                    break
-
-                time.sleep(0.1)
-
-            if not state.interrupted:
-                print(f"📦 {prio_label} 批次完成 ({batch_completed}/{len(batch_specs)})", flush=True)
-            else:
-                break
+            idx += len(batch_specs)
 
     except KeyboardInterrupt:
         state.interrupted = True
-        proc = state.current_process or state.last_process
-        if proc and proc.poll() is None:
-            _stop_process(proc, timeout_sec=2.0)
-
-        issue_number = state.current_issue
-        worktree_path = state.current_worktree_path
-        if issue_number and not worktree_path:
-            worktree_path = _get_worktree_path(worktree_script, issue_number, repo_dir, state)
-        if issue_number and worktree_path:
-            _force_remove_worktree(issue_number, worktree_path, repo_dir, state)
+        # 清理所有活跃的 worktrees
+        with state.lock:
+            for issue_num, worktree_path in list(state.active_worktrees.items()):
+                _force_remove_worktree(issue_num, worktree_path, repo_dir, state)
 
     finally:
         if tty_stdin:
