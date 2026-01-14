@@ -8,7 +8,6 @@ Claude Code skills for GitHub workflow automation. Automate the full lifecycle f
 |-------|-------------|---------|
 | **gh-create-issue** | Create structured issues from PRD/requirements with auto complexity assessment | `/gh-create-issue` |
 | **gh-issue-implement** | Implement single issue: analysis → dev → PR creation | `/gh-issue-implement <number>` |
-| **gh-issue-orchestrator** | List issues, analyze priorities/dependencies, batch implement | `/gh-issue-orchestrator` |
 | **gh-pr-review** | Code review, fix issues, merge PR | `/gh-pr-review <pr_number>` |
 | **gh-project-sync** | Sync issues to GitHub Projects board | `/gh-project-sync` |
 | **gh-project-implement** | Implement ALL issues in a Project (batch by priority) | `/gh-project-implement <project_number>` |
@@ -102,14 +101,6 @@ Full issue-to-PR lifecycle:
 3. Implement using dev workflow
 4. Create PR with "Closes #N" reference
 
-### gh-issue-orchestrator
-
-Batch orchestration:
-- List all open issues
-- Analyze priorities and dependencies
-- Recommend implementation order
-- Parallel execution with Git worktrees
-
 ### gh-pr-review
 
 Comprehensive PR review:
@@ -133,6 +124,7 @@ Batch Project implementation:
 - Each issue: isolated worktree + Claude session
 - Immediate review and merge
 - Retry on failure (max 3 times)
+- Built-in worktree management
 
 ## License
 

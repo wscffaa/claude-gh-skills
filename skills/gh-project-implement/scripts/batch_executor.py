@@ -5,7 +5,7 @@
 功能:
 - 从 stdin 或 --input 文件读取 JSON（priority_batcher.py --json 输出）
 - 遍历每个批次与 issue，串行执行
-- 复用 worktree.py 脚本进行 worktree 管理（默认路径: ~/.claude/skills/gh-issue-orchestrator/scripts/worktree.py）
+- 复用 worktree.py 脚本进行 worktree 管理（同目录下的 worktree.py）
 - 每个 issue 创建独立 worktree: {repo}-worktrees/issue-{number}
 - 使用 subprocess 启动独立 Claude 会话: claude -p "/gh-issue-implement {number}"
 - 失败支持重试：清理 worktree 与远程分支后重试（--max-retries）
@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Any, Optional, TextIO
 
 
-DEFAULT_WORKTREE_SCRIPT = Path("~/.claude/skills/gh-issue-orchestrator/scripts/worktree.py").expanduser()
+DEFAULT_WORKTREE_SCRIPT = Path(__file__).parent / "worktree.py"
 
 
 @dataclass

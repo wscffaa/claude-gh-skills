@@ -129,7 +129,6 @@ python3 scripts/batch_executor.py --input batches.json --max-retries 5
 - 需要 gh CLI 2.0+ 并已认证
 - 需要 `project` scope 权限
 - 依赖 `gh-issue-implement` 和 `gh-pr-review` skills
-- 依赖 `gh-issue-orchestrator/worktree.py` 脚本
 
 ## 目录结构
 
@@ -139,7 +138,9 @@ python3 scripts/batch_executor.py --input batches.json --max-retries 5
 └── scripts/
     ├── get_project_issues.py   # 获取 Project Issues
     ├── priority_batcher.py     # 优先级分批
-    └── batch_executor.py       # 批量执行引擎
+    ├── batch_executor.py       # 批量执行引擎
+    ├── status_sync.py          # Project 状态同步
+    └── worktree.py             # Git Worktree 管理
 ```
 
 ## 参考
