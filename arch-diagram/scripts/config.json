@@ -1,0 +1,20 @@
+{
+  "profiles": {
+    "default": {
+      "architect": "gpt-5.2",
+      "renderer": "gemini-3-pro-image-16x9-4k",
+      "description": "默认配置：横屏 4K 高清，适合架构图（支持对话式 Inpainting）"
+    },
+    "square": {
+      "architect": "gpt-5.2",
+      "renderer": "gemini-3-pro-image-4k",
+      "description": "方形模式：1:1 高清，适合对称架构"
+    },
+    "fast": {
+      "architect": "gpt-5.2",
+      "renderer": "gemini-3-image",
+      "description": "快速模式：标清，降低延迟"
+    }
+  },
+  "active_profile": "default"
+}

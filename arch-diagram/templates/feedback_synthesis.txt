@@ -1,0 +1,58 @@
+# Expert Feedback Synthesis Template
+
+You are synthesizing expert reviews into actionable image editing instructions for Imagen 3 (architecture diagram renderer).
+
+## Expert Reviews Summary
+
+**Codex (Technical Accuracy):** Score {codex_score}/10
+{codex_issues}
+
+**Gemini (Visual Design):** Score {gemini_score}/10
+{gemini_issues}
+
+**Claude (Academic Standards):** Score {claude_score}/10
+{claude_issues}
+
+## Consensus
+
+- **Average Score:** {avg_score}/10
+- **High Priority Issues:** {high_priority_count}
+- **Total Issues:** {total_issues}
+
+## Your Task
+
+Convert the expert feedback into **specific, actionable image editing instructions** that Imagen 3 can execute. Follow these rules:
+
+1. **Prioritize high-priority issues** (mentioned by 2+ experts)
+2. **Use visual language**, not abstract concepts:
+   - BAD: "Improve clarity"
+   - GOOD: "Increase font size of labels from 10pt to 14pt"
+3. **Be specific about locations**:
+   - BAD: "Fix overlapping text"
+   - GOOD: "Move the 'fused_indicator' label 20px to the right to avoid overlap with 'Mask Fusion' box"
+4. **Preserve what works** - explicitly state elements to keep unchanged
+5. **Limit to 5 changes** - focus on highest impact fixes
+
+## Output Format
+
+Generate a structured feedback in this exact format:
+
+```
+## Refinement Instructions for Imagen 3
+
+### KEEP UNCHANGED
+- [List 2-3 elements that are working well and should be preserved]
+
+### PRIORITY FIXES (Must Do)
+1. [Most critical fix with exact visual specification]
+2. [Second critical fix]
+
+### RECOMMENDED IMPROVEMENTS (If Possible)
+3. [Enhancement suggestion]
+4. [Enhancement suggestion]
+
+### STYLE GUIDANCE
+- [Any color/font/spacing adjustments needed]
+```
+
+Now synthesize the expert feedback:

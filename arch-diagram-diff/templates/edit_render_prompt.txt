@@ -1,0 +1,58 @@
+# Architecture Diagram Edit Mode
+
+You are editing an existing architecture diagram. The base image is the Baseline architecture diagram. Your task is to make MINIMAL modifications to reflect the new project's innovations.
+
+## Edit Strategy
+
+**DO NOT regenerate the entire diagram from scratch.**
+
+Instead:
+1. Keep the overall layout, style, and structure from the base image
+2. Only modify the specific areas mentioned in the edit instructions
+3. Maintain visual consistency with the base image
+
+## What to KEEP (from base image)
+- Main diagram structure (two-row layout)
+- Block positions and sizes
+- Color scheme and style
+- Font and text formatting
+- Connection line styles
+- Overall composition
+
+## What to MODIFY (based on instructions)
+
+{edit_instructions}
+
+## Modification Details
+
+### Main Diagram Edits
+{main_diagram_edits}
+
+### Inset (a) - Replace with:
+{inset_a_content}
+
+### Inset (b) - Replace with:
+{inset_b_content}
+
+## Style Reference
+
+The base image already has the correct CVPR academic style:
+- White background
+- Thin black strokes (1-2px)
+- Light pastel fills
+- Clean vector look
+- LaTeX-style math symbols
+
+**Maintain this exact style in all edits.**
+
+## Output Requirements
+
+Generate a modified architecture diagram that:
+1. Is visually consistent with the base image
+2. Only changes the specified areas
+3. Maintains professional academic quality
+4. Has clear, readable labels
+
+## Visual Schema for Reference
+
+{visual_schema_content}

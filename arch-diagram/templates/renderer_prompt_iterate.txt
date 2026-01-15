@@ -1,0 +1,35 @@
+**EDIT THIS IMAGE - Conversational Inpainting Mode**
+
+I have uploaded an architecture diagram that needs to be EDITED. Please modify ONLY the specific parts described below while preserving everything else exactly as it appears.
+
+**EDITING INSTRUCTIONS (Apply these changes to the uploaded image):**
+{feedback}
+
+---
+
+**CRITICAL - What to PRESERVE (DO NOT change these):**
+- Overall layout, composition, and structure
+- All elements NOT mentioned in the editing instructions
+- Color scheme and pastel palette (unless explicitly asked to change)
+- Arrow directions and data flow connections
+- Font styles, sizes, and mathematical notation format
+- 3D isometric cuboid representation style
+- Legend at the bottom
+
+**CRITICAL - What to MODIFY:**
+- ONLY the specific elements mentioned in the editing instructions above
+- Apply changes precisely as described
+- Maintain visual consistency with surrounding unchanged elements
+
+---
+
+**Original Visual Schema (for context - understand the intended structure):**
+{visual_schema_content}
+
+---
+
+**Output Requirements:**
+- Return the EDITED version of the uploaded image
+- The result should look like a refined version of the original, NOT a completely new image
+- All modifications should blend seamlessly with the preserved elements
+- Maintain CVPR/NeurIPS academic publication quality

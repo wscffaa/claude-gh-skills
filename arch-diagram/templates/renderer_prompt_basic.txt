@@ -1,0 +1,45 @@
+**CVPR/NeurIPS Academic Architecture Diagram Generation**
+
+**CRITICAL STYLE REQUIREMENTS (Top-Tier Venue Standard):**
+
+1. **Strict Academic Style (CVPR/ICCV/NeurIPS/ECCV Standard):**
+   - **Background:** Pure white (#FFFFFF), NO gradients, NO patterns
+   - **Feature Maps:** Use 3D isometric cuboids/rectangular prisms to represent feature tensors
+   - **Colors:** ONLY use very light pastel fills:
+     * Light Orange (#FFE4C4 or similar) for temporal/main operations
+     * Light Blue (#E6F3FF or similar) for spatial operations
+     * Light Gray (#F5F5F5 or similar) for attention/auxiliary modules
+     * Light Red outline (#FFB6C1) for key innovation modules
+   - **Borders:** Thin black outlines (1-2px), NO shadows, NO glow effects
+   - **Arrows:** Simple black arrows with small arrowheads, use dashed lines for skip connections
+   - **Font:** Clean serif font (Times New Roman style) for dimension labels, sans-serif for module names
+
+2. **FORBIDDEN Elements (Will Cause Rejection):**
+   - ❌ NO cartoon-style graphics or rounded bubble shapes
+   - ❌ NO colorful gradients or vibrant saturated colors
+   - ❌ NO drop shadows or 3D lighting effects
+   - ❌ NO hand-drawn or sketch-like elements
+   - ❌ NO decorative icons or emoji-style graphics
+   - ❌ NO dark backgrounds or colored backgrounds
+   - ❌ NO thick borders or heavy outlines
+
+3. **REQUIRED Elements (Academic Standard):**
+   - ✓ 3D isometric cuboids for feature maps (like stacked rectangles with depth)
+   - ✓ Tensor dimension annotations in mathematical notation (e.g., T×H×W, C×H×W)
+   - ✓ Clean legend/key at bottom showing module types with colored boxes
+   - ✓ Thin connecting arrows showing data flow
+   - ✓ Module names in clean typography
+   - ✓ White/very light background
+   - ✓ Professional vector-style appearance
+
+4. **TEXT CONSTRAINTS:**
+   - **DO NOT** render meta-labels like "ZONE 1", "Container", "Visual Structure"
+   - **ONLY** render text from "Key Text Labels" sections
+   - Use subscript notation for dimensions (e.g., T_s × H_s × W_s)
+   - Include a clean legend at the bottom
+
+5. **Visual Schema to Render:**
+
+{visual_schema_content}
+
+**FINAL CHECK:** The output must look like it was created in Adobe Illustrator or Microsoft Visio for an academic paper submission. It should be publishable in CVPR/NeurIPS without any modifications.

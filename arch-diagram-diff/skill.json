@@ -1,0 +1,90 @@
+{
+  "name": "arch-diagram-diff",
+  "description": "Baseline 差异驱动的学术架构图生成器 - 基于已有架构图进行差异分析和增量修改",
+  "version": "1.0.0",
+  "author": "BasicOFR",
+  "invocationType": "user",
+  "command": "python3",
+  "args": ["{{SKILL_DIR}}/scripts/skill.py"],
+  "parameters": {
+    "arch_code_path": {
+      "type": "string",
+      "description": "新项目架构代码路径",
+      "required": false
+    },
+    "baseline": {
+      "type": "string",
+      "description": "Baseline 项目名（如 MambaOFR、RTN）",
+      "required": false
+    },
+    "baseline_code_path": {
+      "type": "string",
+      "description": "Baseline 架构代码路径（可选，自动推断）",
+      "required": false
+    },
+    "resume": {
+      "type": "string",
+      "description": "恢复已有任务（任务 ID）",
+      "required": false
+    },
+    "confirm_diff": {
+      "type": "boolean",
+      "description": "确认差异分析，继续生成",
+      "default": false,
+      "required": false
+    },
+    "diff_only": {
+      "type": "boolean",
+      "description": "只运行差异分析，不渲染",
+      "default": false,
+      "required": false
+    },
+    "list": {
+      "type": "boolean",
+      "description": "列出所有任务及状态",
+      "default": false,
+      "required": false
+    },
+    "force": {
+      "type": "boolean",
+      "description": "强制重新执行所有阶段",
+      "default": false,
+      "required": false
+    },
+    "iterate": {
+      "type": "boolean",
+      "description": "迭代模式：基于上一版本生成新版本",
+      "default": false,
+      "required": false
+    },
+    "feedback": {
+      "type": "string",
+      "description": "迭代反馈/修改需求（与 --iterate 配合使用）",
+      "required": false
+    },
+    "output_path": {
+      "type": "string",
+      "description": "输出基础目录",
+      "default": "experiments/visualizations/architecture-diff/",
+      "required": false
+    }
+  },
+  "examples": [
+    {
+      "description": "基于 MambaOFR 生成新架构图",
+      "command": "/arch-diagram-diff --arch_code_path basicofr/archs/freqmamba_arch.py --baseline MambaOFR"
+    },
+    {
+      "description": "确认差异分析后继续",
+      "command": "/arch-diagram-diff --resume task_id --confirm-diff"
+    },
+    {
+      "description": "只运行差异分析",
+      "command": "/arch-diagram-diff --arch_code_path arch.py --baseline MambaOFR --diff-only"
+    },
+    {
+      "description": "列出所有任务",
+      "command": "/arch-diagram-diff --list"
+    }
+  ]
+}

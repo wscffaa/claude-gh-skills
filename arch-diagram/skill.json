@@ -1,0 +1,94 @@
+{
+  "name": "arch-diagram",
+  "description": "学术架构图生成器 - 支持断点续传和渐进式迭代。生成符合 CVPR/NeurIPS 标准的网络架构图。",
+  "version": "2.2.0",
+  "author": "BasicOFR",
+  "invocationType": "user",
+  "command": "python3",
+  "args": ["{{SKILL_DIR}}/scripts/skill.py"],
+  "parameters": {
+    "arch_code_path": {
+      "type": "string",
+      "description": "架构代码路径（代码分析模式）",
+      "required": false
+    },
+    "paper_content": {
+      "type": "string",
+      "description": "论文内容/方法描述（论文模式）",
+      "required": false
+    },
+    "resume": {
+      "type": "string",
+      "description": "恢复已有任务（任务 ID）",
+      "required": false
+    },
+    "list": {
+      "type": "boolean",
+      "description": "列出所有任务及状态",
+      "default": false,
+      "required": false
+    },
+    "force": {
+      "type": "boolean",
+      "description": "强制重新执行所有阶段",
+      "default": false,
+      "required": false
+    },
+    "iterate": {
+      "type": "boolean",
+      "description": "迭代模式：基于上一版本生成新版本",
+      "default": false,
+      "required": false
+    },
+    "feedback": {
+      "type": "string",
+      "description": "迭代反馈/修改需求（与 --iterate 配合使用）",
+      "required": false
+    },
+    "output_path": {
+      "type": "string",
+      "description": "输出基础目录",
+      "default": "experiments/visualizations/architecture/",
+      "required": false
+    },
+    "model_architect": {
+      "type": "string",
+      "description": "Architect 模型",
+      "default": "gpt-5.2",
+      "required": false
+    },
+    "model_renderer": {
+      "type": "string",
+      "description": "Renderer 模型",
+      "default": "gemini-3-pro-image-16x9-4k",
+      "required": false
+    },
+    "reference_images": {
+      "type": "array",
+      "description": "参考图像路径（支持多张）",
+      "required": false
+    }
+  },
+  "examples": [
+    {
+      "description": "从代码生成架构图",
+      "command": "/arch-diagram --arch_code_path basicofr/archs/freqmamba_arch.py"
+    },
+    {
+      "description": "列出所有任务",
+      "command": "/arch-diagram --list"
+    },
+    {
+      "description": "恢复中断的任务",
+      "command": "/arch-diagram --resume freqmamba_arch_20251231_160000"
+    },
+    {
+      "description": "渐进式迭代（基于上一版本 + 反馈）",
+      "command": "/arch-diagram --resume task_id --iterate --feedback \"将文字标注改为数学符号风格\""
+    },
+    {
+      "description": "强制重新执行",
+      "command": "/arch-diagram --resume freqmamba_arch_20251231_160000 --force"
+    }
+  ]
+}
