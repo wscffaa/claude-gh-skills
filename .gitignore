@@ -1,22 +1,21 @@
-# Python
+# Only keep gh-* skills in this repo
+# All other skills are ignored
+aliyunpan/
+arch-diagram*/
+banana/
+codeagent/
+codex/
+experience-index/
+gemini/
+omo*/
+p2m/
+parallel-agent/
+planning-with-files/
+product-requirements/
+prototype-prompt-generator/
+skill-creator/
+skill-install/
+skills/
+ofr-*/
 __pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-*.egg-info/
-.eggs/
-
-# macOS
-.DS_Store
-.AppleDouble
-.LSOverride
-
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-
-# Logs
-*.log
+*.pyc
