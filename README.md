@@ -6,6 +6,12 @@ Claude Code 的 GitHub 工作流自动化技能集。从需求到合并 PR 的�
 
 ## 技能概览
 
+### 一键自动化（推荐）
+
+| 技能 | 描述 | 触发命令 |
+|------|------|----------|
+| **gh-autopilot** | 端到端自动化：PRD→Issue→Project→实现→PR→合并 | `/gh-autopilot [PRD或需求]` |
+
 ### 需求与 Issue 创建
 
 | 技能 | 描述 | 触发命令 |
@@ -29,6 +35,27 @@ Claude Code 的 GitHub 工作流自动化技能集。从需求到合并 PR 的�
 | **gh-project-pr** | Project 级别批量 PR 审查 | `/gh-project-pr <project_number>` |
 
 ## 工作流示意
+
+### gh-autopilot 一键自动化（推荐）
+
+```
+用户需求/PRD
+       │
+       ▼
+┌──────────────────────────────────────────────────────┐
+│                    gh-autopilot                      │
+│  ┌────────────────────────────────────────────────┐  │
+│  │ 1. product-requirements  → 生成 PRD（可选）    │  │
+│  │ 2. gh-create-issue       → 创建 Issue         │  │
+│  │ 3. gh-project-sync       → 同步看板           │  │
+│  │ 4. gh-project-implement  → 并发实现           │  │
+│  │ 5. gh-project-pr         → 审查合并           │  │
+│  └────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────┘
+       │
+       ▼
+    完成报告
+```
 
 ### 单个 Issue/PR 处理
 

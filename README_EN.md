@@ -6,6 +6,12 @@ Claude Code skills for GitHub workflow automation. Automate the full lifecycle f
 
 ## Skills Overview
 
+### One-Click Automation (Recommended)
+
+| Skill | Description | Trigger |
+|-------|-------------|---------|
+| **gh-autopilot** | End-to-end automation: PRD→Issue→Project→Implement→PR→Merge | `/gh-autopilot [PRD or requirement]` |
+
 ### Requirements & Issue Creation
 
 | Skill | Description | Trigger |
@@ -29,6 +35,27 @@ Claude Code skills for GitHub workflow automation. Automate the full lifecycle f
 | **gh-project-pr** | Batch PR review for entire Project | `/gh-project-pr <project_number>` |
 
 ## Workflow
+
+### gh-autopilot One-Click Automation (Recommended)
+
+```
+User Requirements/PRD
+       │
+       ▼
+┌──────────────────────────────────────────────────────┐
+│                    gh-autopilot                      │
+│  ┌────────────────────────────────────────────────┐  │
+│  │ 1. product-requirements  → Generate PRD (opt)  │  │
+│  │ 2. gh-create-issue       → Create Issues       │  │
+│  │ 3. gh-project-sync       → Sync to Board       │  │
+│  │ 4. gh-project-implement  → Concurrent Impl     │  │
+│  │ 5. gh-project-pr         → Review & Merge      │  │
+│  └────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────┘
+       │
+       ▼
+  Completion Report
+```
 
 ### Single Issue/PR Processing
 
