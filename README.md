@@ -11,6 +11,7 @@ Claude Code skills for GitHub workflow automation. Automate the full lifecycle f
 | **gh-pr-review** | Code review, fix issues, merge PR | `/gh-pr-review <pr_number>` |
 | **gh-project-sync** | Sync issues to GitHub Projects board | `/gh-project-sync` |
 | **gh-project-implement** | Implement ALL issues in a Project with concurrent execution | `/gh-project-implement <project_number>` |
+| **gh-project-pr** | Batch PR review for entire Project | `/gh-project-pr <project_number>` |
 
 ## Workflow
 
@@ -30,9 +31,14 @@ PRD/Requirements
          ▼
 ┌───────────────────────┐
 │ gh-project-implement  │  Concurrent batch by priority (P0→P1→P2→P3)
-│  ├─ gh-issue-implement│  Parallel worktrees + Claude sessions
-│  └─ gh-pr-review      │  Review → Fix → Merge
-└───────────────────────┘
+│  └─ gh-issue-implement│  Parallel worktrees + Claude sessions
+└────────┬──────────────┘
+         │
+         ▼
+┌──────────────────┐
+│  gh-project-pr   │  Batch review → merge → update status
+│  └─ gh-pr-review │  Per-PR review
+└──────────────────┘
 ```
 
 ## Key Features
@@ -50,11 +56,39 @@ PRD/Requirements
 
 **Dependency-aware**: When issues have dependencies, parallelism is reduced by 1 to avoid excessive waiting.
 
-### DAG Scheduler
+### Project-Level PR Review (NEW)
 
-- **Dependency tracking**: Issues only start when dependencies complete
-- **Blocked detection**: Issues with failed dependencies are auto-skipped
-- **Thread-safe**: Concurrent execution with proper locking
+`gh-project-pr` automates batch PR review for an entire Project:
+
+```bash
+# Preview PRs to review (dry-run)
+/gh-project-pr 1 --dry-run
+
+# Execute batch review with auto-merge
+/gh-project-pr 1 --auto-merge
+
+# Filter by priority
+/gh-project-pr 1 --priority p0,p1
+```
+
+**Workflow Phases:**
+1. **Phase 1-2**: Get Project Items → Find linked PRs
+2. **Phase 3**: Sort by priority (P0→P1→P2→P3)
+3. **Phase 4**: Batch review (serial by default, `--parallel` optional)
+4. **Phase 5**: Update Project status to "Done"
+5. **Phase 6**: Generate summary report
+
+### Repository-Level Projects
+
+All `gh-project-*` skills now support **repository-level Projects** by default:
+
+```bash
+# Default: repository-level Project
+/gh-project-sync
+
+# Fallback: user-level Project (backward compatible)
+/gh-project-sync --user
+```
 
 ## Installation
 
@@ -65,7 +99,7 @@ PRD/Requirements
 git clone https://github.com/wscffaa/claude-gh-skills.git
 
 # Copy skills to your Claude skills directory
-cp -r claude-gh-skills/skills/* ~/.claude/skills/
+cp -r claude-gh-skills/gh-* ~/.claude/skills/
 ```
 
 ### Option 2: Symlink (for development)
@@ -75,7 +109,7 @@ git clone https://github.com/wscffaa/claude-gh-skills.git
 cd claude-gh-skills
 
 # Symlink each skill
-for skill in skills/gh-*; do
+for skill in gh-*; do
   ln -sf "$(pwd)/$skill" ~/.claude/skills/
 done
 ```
@@ -98,10 +132,11 @@ done
 # 3. Implement all issues in the Project (concurrent)
 /gh-project-implement 1
 
-# Or implement a single issue
-/gh-issue-implement 42
+# 4. Batch review all PRs in the Project
+/gh-project-pr 1 --auto-merge
 
-# Review and merge a PR
+# Or work with individual issues/PRs
+/gh-issue-implement 42
 /gh-pr-review 56
 ```
 
@@ -133,7 +168,7 @@ Comprehensive PR review:
 ### gh-project-sync
 
 Project board integration:
-- Create or select GitHub Project
+- Create or select GitHub Project (repository-level by default)
 - Sync issues to board
 - Auto-assign status columns by priority
 
@@ -145,23 +180,54 @@ Batch Project implementation with concurrent execution:
 - **Concurrent execution** within each batch (DAG scheduler)
 - **Adaptive parallelism** based on priority and dependencies
 - Each issue: isolated worktree + Claude session
-- Immediate review and merge
 - Retry on failure (max 3 times)
-- Built-in worktree management
 
-**Example output:**
+### gh-project-pr
+
+Batch PR review for entire Project:
+- **Phase 1**: Get Project Items (filter: Issue type, non-Done status)
+- **Phase 2**: Find linked PRs (3 strategies: linked:issue, branch name, body reference)
+- **Phase 3**: Sort by priority
+- **Phase 4**: Batch review via `gh-pr-review`
+- **Phase 5**: Update Project Item status to "Done"
+- **Phase 6**: Generate summary report
+
+**CLI Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--dry-run` | Preview only, no execution |
+| `--auto-merge` | Auto-merge after approval |
+| `--parallel` | Parallel review (use with caution) |
+| `--priority p0,p1` | Filter by priority |
+| `--user` | Use user-level Project |
+
+## Directory Structure
+
 ```
-🚀 开始处理 (共 10 个 issues)
-
-📦 P0 批次 (2 issues, 并发=4)
-[1/10] 正在处理 Issue #42: 添加登录功能 (P0)
-[2/10] 正在处理 Issue #43: 修复 bug (P0)
-✅ Issue #43 已完成，PR #57 已合并 (耗时 1m15s)
-✅ Issue #42 已完成，PR #56 已合并 (耗时 2m30s)
-📦 P0 批次完成 (2/2)
-
-📦 P1 批次 (3 issues, 并发=2)
-...
+~/.claude/skills/
+├── gh-create-issue/
+│   ├── SKILL.md
+│   └── references/
+├── gh-issue-implement/
+│   └── SKILL.md
+├── gh-pr-review/
+│   └── SKILL.md
+├── gh-project-sync/
+│   ├── SKILL.md
+│   └── scripts/
+├── gh-project-implement/
+│   ├── SKILL.md
+│   └── scripts/
+└── gh-project-pr/
+    ├── SKILL.md
+    └── scripts/
+        ├── main.py              # Entry point (--dry-run)
+        ├── get_project_prs.py   # Phase 1-2
+        ├── sort_by_priority.py  # Phase 3
+        ├── batch_review.py      # Phase 4
+        ├── update_status.py     # Phase 5
+        └── generate_report.py   # Phase 6
 ```
 
 ## License
