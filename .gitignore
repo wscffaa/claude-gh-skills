@@ -18,3 +18,4 @@ skills/
 ofr-*/
 __pycache__/
 *.pyc
+gh-autopilot/scripts/.coverage
