@@ -1,25 +1,62 @@
 # Claude GitHub Skills
 
-[中文版](#中文版) | [English](#english)
-
----
-
-# 中文版
+[English](README_EN.md)
 
 Claude Code 的 GitHub 工作流自动化技能集。从需求到合并 PR 的全生命周期自动化。
 
 ## 技能概览
 
+### 需求与 Issue 创建
+
 | 技能 | 描述 | 触发命令 |
 |------|------|----------|
+| **product-requirements** | 交互式需求收集与 PRD 生成，100 分质量评估体系 | `/product-requirements` |
 | **gh-create-issue** | 从 PRD/需求创建结构化 Issue，自动评估复杂度 | `/gh-create-issue` |
+
+### 单个 Issue/PR 处理
+
+| 技能 | 描述 | 触发命令 |
+|------|------|----------|
 | **gh-issue-implement** | 单个 Issue 实现：分析→开发→创建 PR | `/gh-issue-implement <number>` |
 | **gh-pr-review** | 代码审查、修复问题、合并 PR | `/gh-pr-review <pr_number>` |
+
+### Project 级别批量处理
+
+| 技能 | 描述 | 触发命令 |
+|------|------|----------|
 | **gh-project-sync** | 同步 Issue 到 GitHub Projects 看板 | `/gh-project-sync` |
 | **gh-project-implement** | 并发实现 Project 中所有 Issue | `/gh-project-implement <project_number>` |
 | **gh-project-pr** | Project 级别批量 PR 审查 | `/gh-project-pr <project_number>` |
 
 ## 工作流示意
+
+### 单个 Issue/PR 处理
+
+```
+用户需求
+       │
+       ▼
+┌───────────────────────┐
+│ product-requirements  │  交互式需求收集 → 生成 PRD
+└────────┬──────────────┘
+         │
+         ▼
+┌──────────────────┐
+│ gh-create-issue  │  创建单个 Issue
+└────────┬─────────┘
+         │
+         ▼
+┌───────────────────────┐
+│  gh-issue-implement   │  分析 → 开发 → 创建 PR
+└────────┬──────────────┘
+         │
+         ▼
+┌──────────────────┐
+│   gh-pr-review   │  审查 → 修复 → 合并
+└──────────────────┘
+```
+
+### Project 级别批量处理
 
 ```
 PRD/需求文档
@@ -98,23 +135,25 @@ PRD/需求文档
 
 ## 安装
 
-### 方式一：复制到 Claude Skills 目录
+### 首次安装
 
 ```bash
-git clone https://github.com/wscffaa/claude-gh-skills.git
-cp -r claude-gh-skills/gh-* ~/.claude/skills/
-```
+# 克隆到固定目录
+git clone https://github.com/wscffaa/claude-gh-skills.git ~/claude-gh-skills
 
-### 方式二：符号链接（开发用）
-
-```bash
-git clone https://github.com/wscffaa/claude-gh-skills.git
-cd claude-gh-skills
-
-for skill in gh-*; do
-  ln -sf "$(pwd)/$skill" ~/.claude/skills/
+# 符号链接到 Claude Skills 目录
+for skill in ~/claude-gh-skills/gh-*; do
+  ln -sf "$skill" ~/.claude/skills/
 done
 ```
+
+### 更新技能
+
+```bash
+cd ~/claude-gh-skills && git pull
+```
+
+> 使用符号链接方式，`git pull` 后技能即时生效，无需重新复制。
 
 ## 依赖
 
@@ -204,220 +243,10 @@ Project 级别批量 PR 审查：
 | `--priority p0,p1` | 按优先级过滤 |
 | `--user` | 使用用户级 Project |
 
-## 相关仓库
+## 致谢
 
-- [claude-code-skills](https://github.com/wscffaa/claude-code-skills) - 更多 Claude Code 技能（AI 代码助手、规划文档、多代理编排等）
+- **product-requirements** 技能源自 [cexll/myclaude](https://github.com/cexll/myclaude)
 
 ## 许可证
-
-MIT
-
----
-
-# English
-
-Claude Code skills for GitHub workflow automation. Automate the full lifecycle from requirements to merged PRs.
-
-## Skills Overview
-
-| Skill | Description | Trigger |
-|-------|-------------|---------|
-| **gh-create-issue** | Create structured issues from PRD/requirements with auto complexity assessment | `/gh-create-issue` |
-| **gh-issue-implement** | Implement single issue: analysis → dev → PR creation | `/gh-issue-implement <number>` |
-| **gh-pr-review** | Code review, fix issues, merge PR | `/gh-pr-review <pr_number>` |
-| **gh-project-sync** | Sync issues to GitHub Projects board | `/gh-project-sync` |
-| **gh-project-implement** | Implement ALL issues in a Project with concurrent execution | `/gh-project-implement <project_number>` |
-| **gh-project-pr** | Batch PR review for entire Project | `/gh-project-pr <project_number>` |
-
-## Workflow
-
-```
-PRD/Requirements
-       │
-       ▼
-┌──────────────────┐
-│ gh-create-issue  │  Create epic + sub-issues
-└────────┬─────────┘
-         │
-         ▼
-┌──────────────────┐
-│ gh-project-sync  │  Sync to Project board
-└────────┬─────────┘
-         │
-         ▼
-┌───────────────────────┐
-│ gh-project-implement  │  Concurrent batch by priority (P0→P1→P2→P3)
-│  └─ gh-issue-implement│  Parallel worktrees + Claude sessions
-└────────┬──────────────┘
-         │
-         ▼
-┌──────────────────┐
-│  gh-project-pr   │  Batch review → merge → update status
-│  └─ gh-pr-review │  Per-PR review
-└──────────────────┘
-```
-
-## Key Features
-
-### Concurrent Execution with Adaptive Parallelism
-
-`gh-project-implement` supports parallel issue processing with intelligent concurrency control:
-
-| Priority | Max Workers | Description |
-|----------|-------------|-------------|
-| P0 | 4 | Urgent tasks, high parallelism |
-| P1 | 3 | Medium priority |
-| P2 | 2 | Normal tasks |
-| P3 | 1 | Low priority, conserve resources |
-
-**Dependency-aware**: When issues have dependencies, parallelism is reduced by 1 to avoid excessive waiting.
-
-### Project-Level PR Review
-
-`gh-project-pr` automates batch PR review for an entire Project:
-
-```bash
-# Preview PRs to review (dry-run)
-/gh-project-pr 1 --dry-run
-
-# Execute batch review with auto-merge
-/gh-project-pr 1 --auto-merge
-
-# Filter by priority
-/gh-project-pr 1 --priority p0,p1
-```
-
-**Workflow Phases:**
-1. **Phase 1-2**: Get Project Items → Find linked PRs
-2. **Phase 3**: Sort by priority (P0→P1→P2→P3)
-3. **Phase 4**: Batch review (serial by default, `--parallel` optional)
-4. **Phase 5**: Update Project status to "Done"
-5. **Phase 6**: Generate summary report
-
-### Repository-Level Projects
-
-All `gh-project-*` skills now support **repository-level Projects** by default:
-
-```bash
-# Default: repository-level Project
-/gh-project-sync
-
-# Fallback: user-level Project (backward compatible)
-/gh-project-sync --user
-```
-
-## Installation
-
-### Option 1: Copy to Claude Skills Directory
-
-```bash
-git clone https://github.com/wscffaa/claude-gh-skills.git
-cp -r claude-gh-skills/gh-* ~/.claude/skills/
-```
-
-### Option 2: Symlink (for development)
-
-```bash
-git clone https://github.com/wscffaa/claude-gh-skills.git
-cd claude-gh-skills
-
-for skill in gh-*; do
-  ln -sf "$(pwd)/$skill" ~/.claude/skills/
-done
-```
-
-## Requirements
-
-- [Claude Code CLI](https://github.com/anthropics/claude-code) installed
-- [GitHub CLI (gh)](https://cli.github.com/) installed and authenticated
-- `gh` permissions: `repo`, `project`, `read:org`
-
-## Quick Start
-
-```bash
-# 1. Create issues from a PRD
-/gh-create-issue based on docs/my-feature-prd.md
-
-# 2. Sync issues to a Project board
-/gh-project-sync
-
-# 3. Implement all issues in the Project (concurrent)
-/gh-project-implement 1
-
-# 4. Batch review all PRs in the Project
-/gh-project-pr 1 --auto-merge
-
-# Or work with individual issues/PRs
-/gh-issue-implement 42
-/gh-pr-review 56
-```
-
-## Skill Details
-
-### gh-create-issue
-
-Creates GitHub issues with PM-level task breakdown:
-- Simple tasks → Single issue
-- Complex tasks → Epic + sub-issues with dependencies
-- Auto-assigns priority labels (`priority:p0` to `priority:p3`)
-
-### gh-issue-implement
-
-Full issue-to-PR lifecycle:
-1. Fetch issue details via `gh issue view`
-2. Analyze requirements
-3. Implement using dev workflow
-4. Create PR with "Closes #N" reference
-
-### gh-pr-review
-
-Comprehensive PR review:
-- Deep code analysis via codeagent
-- CI status verification
-- Auto-fix issues (up to 3 iterations)
-- Squash merge with branch cleanup
-
-### gh-project-sync
-
-Project board integration:
-- Create or select GitHub Project (repository-level by default)
-- Sync issues to board
-- Auto-assign status columns by priority
-
-### gh-project-implement
-
-Batch Project implementation with concurrent execution:
-- Fetch all Open issues from Project
-- Group by priority (P0 → P1 → P2 → P3)
-- **Concurrent execution** within each batch (DAG scheduler)
-- **Adaptive parallelism** based on priority and dependencies
-- Each issue: isolated worktree + Claude session
-- Retry on failure (max 3 times)
-
-### gh-project-pr
-
-Batch PR review for entire Project:
-- **Phase 1**: Get Project Items (filter: Issue type, non-Done status)
-- **Phase 2**: Find linked PRs (3 strategies: linked:issue, branch name, body reference)
-- **Phase 3**: Sort by priority
-- **Phase 4**: Batch review via `gh-pr-review`
-- **Phase 5**: Update Project Item status to "Done"
-- **Phase 6**: Generate summary report
-
-**CLI Options:**
-
-| Option | Description |
-|--------|-------------|
-| `--dry-run` | Preview only, no execution |
-| `--auto-merge` | Auto-merge after approval |
-| `--parallel` | Parallel review (use with caution) |
-| `--priority p0,p1` | Filter by priority |
-| `--user` | Use user-level Project |
-
-## Related Repositories
-
-- [claude-code-skills](https://github.com/wscffaa/claude-code-skills) - More Claude Code skills (AI code assistants, planning & docs, multi-agent orchestration, etc.)
-
-## License
 
 MIT
