@@ -1,11 +1,6 @@
 ---
 name: gh-project-sync
-description: |
-  将 GitHub Issues 同步到 GitHub Projects 可视化管理。支持交互选择已有项目或新建项目，根据 Issue 优先级自动分配状态列。
-  触发条件：
-  - /gh-project-sync 或 /project-sync
-  - gh-create-issue 完成后自动触发（可选）
-  - 用户提到"同步到项目"、"加入看板"、"project sync"
+description: 同步 Issue 到 GitHub Projects 看板。
 ---
 
 # gh-project-sync

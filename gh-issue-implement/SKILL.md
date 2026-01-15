@@ -1,6 +1,6 @@
 ---
 name: gh-issue-implement
-description: This skill should be used when implementing GitHub issues. Takes an issue number, fetches issue details via gh CLI, performs development using the dev skill, and creates a PR upon completion. Handles the full issue-to-PR lifecycle with progress tracking.
+description: 实现单个 Issue：获取详情→开发→创建 PR。
 ---
 
 # GitHub Issue Implementation

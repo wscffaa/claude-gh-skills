@@ -1,11 +1,6 @@
 ---
 name: gh-project-implement
-description: |
-  自动化实现 GitHub Project 下所有 Open Issues。按优先级分批（P0 → P1 → P2 → P3），
-  每个 issue 使用独立 worktree + Claude 会话，支持并发执行、即时 Review/合并和失败重试。
-  触发条件：
-  - /gh-project-implement <project_number>
-  - 用户提到"实现项目"、"批量实现"、"project implement"
+description: 按优先级并发实现 Project 中所有 Issue。
 ---
 
 # gh-project-implement

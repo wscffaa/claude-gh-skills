@@ -1,6 +1,6 @@
 ---
 name: gh-create-issue
-description: This skill should be used when creating GitHub issues from PRD documents or user requirements. Automatically assesses task complexity and creates either single issues for simple tasks or epic issues with sub-issues for complex tasks. Applies PM-level task breakdown, prioritization, and dependency management using gh CLI.
+description: 从 PRD/需求创建结构化 Issue，自动评估复杂度并拆分子任务。
 ---
 
 # GitHub Issue Creator

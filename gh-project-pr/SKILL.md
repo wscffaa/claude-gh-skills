@@ -1,11 +1,6 @@
 ---
 name: gh-project-pr
-description: |
-  获取 GitHub Project 中 Issues 与 PR 的映射关系。
-  支持多种 PR 查找策略：linked:issue、分支名、body 引用。
-  触发条件：
-  - /gh-project-pr <project_number>
-  - 用户提到"project pr"、"issue pr 映射"
+description: Project 级别批量 PR 审查与合并。
 ---
 
 # gh-project-pr

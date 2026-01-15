@@ -1,6 +1,6 @@
 ---
 name: gh-pr-review
-description: Review PR with code analysis, fix issues, and merge. Input can be a PR number for single review or "issue:N" for epic batch review. Performs comprehensive code review using codeagent, verifies CI status, fixes issues, and ensures healthy merge.
+description: PR 代码审查、问题修复、CI 验证与合并。
 ---
 
 # GitHub PR Review
