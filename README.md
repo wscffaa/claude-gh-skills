@@ -182,6 +182,27 @@ cd ~/claude-gh-skills && git pull
 
 > 使用符号链接方式，`git pull` 后技能即时生效，无需重新复制。
 
+### 更新 AI 工具链
+
+一键更新 codeagent-wrapper、claude-code、codex、gemini-cli：
+
+```bash
+./scripts/update-ai-tools.sh
+```
+
+或手动更新：
+
+```bash
+# 更新 codeagent-wrapper (来自 cexll/myclaude)
+git clone --depth 1 https://github.com/cexll/myclaude.git /tmp/myclaude
+python3 /tmp/myclaude/install.py --install-dir ~/.claude --module dev --force
+
+# 更新 npm 全局包
+npm i -g @anthropic-ai/claude-code@latest
+npm i -g @openai/codex@latest
+npm i -g @google/gemini-cli@latest
+```
+
 ## 依赖
 
 - [Claude Code CLI](https://github.com/anthropics/claude-code) 已安装
@@ -273,6 +294,10 @@ Project 级别批量 PR 审查：
 ## 致谢
 
 - **product-requirements** 技能源自 [cexll/myclaude](https://github.com/cexll/myclaude)
+- **codeagent-wrapper** 工具来自 [cexll/myclaude](https://github.com/cexll/myclaude) - 多后端 AI 代码执行器
+- **Claude Code CLI** 来自 [Anthropic](https://github.com/anthropics/claude-code)
+- **Codex CLI** 来自 [OpenAI](https://github.com/openai/codex)
+- **Gemini CLI** 来自 [Google](https://github.com/anthropics-ai/gemini-cli)
 
 ## 许可证
 
