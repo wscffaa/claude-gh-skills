@@ -95,12 +95,33 @@ description: 端到端自动化：PRD→Issue→Project→实现→PR→合并�
 ### 阶段 3: 同步到 Project
 
 **执行：**
+
+1. **检查已有仓库级 Project**：
+```bash
+# 使用 gh-project-sync 的脚本列出仓库级 Projects
+python3 ~/.claude/skills/gh-project-sync/scripts/list_projects.py --json
 ```
-调用 /gh-project-sync
+
+2. **创建或选择 Project**：
+   - 如果没有已有 Project → 使用脚本创建仓库级 Project
+   - 如果已有 Project → 选择合适的 Project
+
+```bash
+# 创建仓库级 Project（自动关联到当前仓库）
+python3 ~/.claude/skills/gh-project-sync/scripts/create_project.py --title "Project Name" --json
+```
+
+> **重要**：必须使用 `create_project.py` 脚本创建 Project，**不要直接使用 `gh project create --owner`**！
+> 脚本会自动将 Project 关联到当前仓库，使其显示在仓库的 Projects 页面。
+
+3. **同步 Issues**：
+```bash
+# 将 Issues 添加到 Project
+gh project item-add PROJECT_NUMBER --owner OWNER --url ISSUE_URL
 ```
 
 **期望结果：**
-- Issue 同步到仓库级 GitHub Project
+- Issue 同步到仓库级 GitHub Project（显示在仓库 `/projects` 页面）
 - 按优先级自动分配状态列
 
 **错误处理：**
@@ -249,12 +270,20 @@ def gh_autopilot(input_arg, options):
         return report.fail("Issue 创建失败")
     report.issues_created = len(issues)
 
-    # 阶段 3: 同步看板
+    # 阶段 3: 同步看板（使用仓库级 Project）
     print("📋 阶段 3/6: 同步到 Project...")
     if not options.skip_sync:
-        project = retry(3, lambda: invoke_skill("/gh-project-sync"))
-        if not project:
-            print("⚠️ Project 同步失败，继续执行...")
+        # 重要：使用 create_project.py 脚本创建仓库级 Project
+        # 不要使用 gh project create --owner，那会创建用户级 Project
+        existing = run("python3 ~/.claude/skills/gh-project-sync/scripts/list_projects.py --json")
+        if not existing.projects:
+            project = run("python3 ~/.claude/skills/gh-project-sync/scripts/create_project.py --title 'Project Name' --json")
+        else:
+            project = existing.projects[0]  # 或让用户选择
+
+        # 同步 Issues 到 Project
+        for issue in issues:
+            run(f"gh project item-add {project.number} --owner {owner} --url {issue.url}")
 
     # 阶段 4: 并发实现
     print("🔨 阶段 4/6: 并发实现...")
