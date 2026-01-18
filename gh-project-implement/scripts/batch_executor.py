@@ -13,9 +13,9 @@
   - 有依赖时并发数 -1
 - 复用 worktree.py 脚本进行 worktree 管理（同目录下的 worktree.py）
 - 每个 issue 创建独立 worktree: {repo}-worktrees/issue-{number}
-- 使用 subprocess 启动独立 Claude 会话: claude -p "/gh-issue-implement {number}"
+- 使用 codeagent-wrapper 执行单个 issue（stdin 传入任务说明）
 - 失败支持重试：清理 worktree 与远程分支后重试（--max-retries）
-- 若检测到对应 PR（head=issue-{number}），自动执行 PR Review（claude -p "/gh-pr-review {pr_number}"）并合并（gh pr merge --squash --delete-branch）
+- 若检测到对应 PR（head=issue-{number}），自动执行 PR Review（codeagent-wrapper --backend codex）并合并（gh pr merge --squash --delete-branch）
 - issue 完成后自动清理 worktree
 - Ctrl+C（SIGINT）时清理当前 worktree 并输出已完成报告
 
@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 import signal
 import subprocess
 import sys
@@ -46,6 +47,7 @@ from typing import Any, Optional, TextIO
 
 
 DEFAULT_WORKTREE_SCRIPT = Path(__file__).parent / "worktree.py"
+SESSION_ID_PATTERN = re.compile(r"\bSESSION_ID\s*[:=]\s*([A-Za-z0-9._-]+)")
 
 
 @dataclass
@@ -76,6 +78,7 @@ class ExecState:
     current_worktree_path: Optional[Path] = None
     current_process: Optional[subprocess.Popen] = None
     last_process: Optional[subprocess.Popen] = None
+    session_ids: dict[int, str] = field(default_factory=dict)
     # 并发执行相关
     active_issues: set[int] = field(default_factory=set)
     active_processes: dict[int, subprocess.Popen] = field(default_factory=dict)
@@ -311,6 +314,15 @@ def _last_nonempty_line(text: str) -> str:
     return lines[-1] if lines else ""
 
 
+def _parse_session_id(text: str) -> Optional[str]:
+    if not text:
+        return None
+    matches = SESSION_ID_PATTERN.findall(text)
+    if not matches:
+        return None
+    return matches[-1]
+
+
 def _stop_process(proc: subprocess.Popen, timeout_sec: float = 5.0) -> None:
     if proc.poll() is not None:
         return
@@ -420,23 +432,43 @@ def _cleanup_remote_branch(issue_number: int, repo_dir: Path, state: ExecState) 
     return False, detail or f"git push origin --delete {branch} 失败（exit={result.returncode}）"
 
 
-def _run_claude(issue_number: int, worktree_path: Path, tty_stdin: Optional[TextIO], state: ExecState) -> int:
-    cmd = ["claude", "-p", f"/gh-issue-implement {issue_number}"]
+def _run_claude(issue_number: int, title: str, worktree_path: Path, state: ExecState) -> int:
+    task_content = (
+        f"实现 Issue #{issue_number}: {title}\n\n"
+        "Requirements:\n"
+        "- 参考 issue 描述完成开发任务\n"
+        f"- 创建 issue-{issue_number} 分支\n"
+        "- 提交代码并创建 PR\n\n"
+        "Deliverables:\n"
+        "- 代码实现\n"
+        "- 单元测试\n"
+        f"- 创建 PR (分支名: issue-{issue_number})\n"
+    )
+    cmd = ["codeagent-wrapper", "--backend", "codex", "-"]
     try:
-        proc = subprocess.Popen(cmd, cwd=str(worktree_path), stdin=tty_stdin)
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(worktree_path),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
     except FileNotFoundError:
         return 127
 
     state.current_process = proc
     state.last_process = proc
     try:
-        while True:
-            try:
-                return proc.wait(timeout=0.2)
-            except subprocess.TimeoutExpired:
-                continue
+        stdout, stderr = proc.communicate(input=task_content)
     finally:
         state.current_process = None
+
+    session_id = _parse_session_id(stdout) or _parse_session_id(stderr)
+    if session_id:
+        with state.lock:
+            state.session_ids[issue_number] = session_id
+    return proc.returncode
 
 
 def _get_pr_number(issue_number: int, repo: Optional[str], cwd: Path, state: ExecState) -> Optional[int]:
@@ -464,22 +496,34 @@ def _run_pr_review(
     tty_stdin: Optional[TextIO],
     state: ExecState,
 ) -> int:
-    cmd = ["claude", "-p", f"/gh-pr-review {pr_number}"]
+    task_content = (
+        f"审查并处理 PR #{pr_number}\n\n"
+        "Requirements:\n"
+        "- 检查 PR 代码质量\n"
+        "- 运行相关测试\n"
+        "- 如有问题，提供修复建议\n"
+    )
+    cmd = ["codeagent-wrapper", "--backend", "codex", "-"]
     try:
-        proc = subprocess.Popen(cmd, cwd=str(worktree_path), stdin=tty_stdin)
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(worktree_path),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
     except FileNotFoundError:
         return 127
 
     state.current_process = proc
     state.last_process = proc
     try:
-        while True:
-            try:
-                return proc.wait(timeout=0.2)
-            except subprocess.TimeoutExpired:
-                continue
+        stdout, stderr = proc.communicate(input=task_content)
     finally:
         state.current_process = None
+
+    return proc.returncode
 
 
 def _merge_pr(pr_number: int, repo: Optional[str], cwd: Path, state: ExecState) -> tuple[bool, str]:
@@ -600,7 +644,7 @@ def _execute_single_issue(
     print_lock: Lock,
 ) -> IssueResult:
     """
-    执行单个 issue 的完整流程（worktree → claude → PR review → merge）。
+    执行单个 issue 的完整流程（worktree → codeagent-wrapper → PR review → merge）。
     线程安全，可用于并发执行。
     """
     issue_number = spec.number
@@ -674,7 +718,7 @@ def _execute_single_issue(
             with state.lock:
                 state.active_worktrees[issue_number] = worktree_path
 
-            rc = _run_claude(issue_number, worktree_path, tty_stdin, state)
+            rc = _run_claude(issue_number, title_display, worktree_path, state)
             if state.interrupted:
                 final_status = "interrupted"
                 final_returncode = rc
@@ -703,7 +747,7 @@ def _execute_single_issue(
                     final_returncode = rc
                     break
             else:
-                last_error = f"claude exit={rc}"
+                last_error = f"codeagent exit={rc}"
                 attempt_details.append(f"attempt {attempt}: {last_error}")
                 final_returncode = rc
 
@@ -918,7 +962,7 @@ def _execute_batch_concurrent(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="按 priority 批次并发执行 Issues（worktree + claude）")
+    parser = argparse.ArgumentParser(description="按 priority 批次并发执行 Issues（worktree + codeagent-wrapper）")
     parser.add_argument("--input", help="priority_batcher.py --json 的输出文件（默认从 stdin 读取）")
     parser.add_argument("--repo", help="用于 gh issue view 的仓库（默认使用当前仓库）")
     parser.add_argument("--repo-dir", default=".", help="执行 git/gh/worktree 的仓库目录（默认当前目录）")
