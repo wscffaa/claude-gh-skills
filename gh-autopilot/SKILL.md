@@ -3,6 +3,15 @@ name: gh-autopilot
 description: 端到端自动化：PRD→Issue→Project→实现→PR→合并，全程无需人工干预。
 ---
 
+## CRITICAL CONSTRAINTS (MANDATORY)
+
+**阶段 4 执行约束**：
+- **MUST** 使用 Bash tool 调用 `codeagent-wrapper --backend codex`
+- **NEVER** 使用 Task tool 的 code/bugfix/dev 等 subagent
+- **NEVER** 使用 Edit/Write/MultiEdit 工具直接修改代码
+
+违反上述约束将导致工作流无效。
+
 # gh-autopilot
 
 从 PRD 到代码合并的全自动化流水线。用户只需确定需求，剩下的交给 Claude。
@@ -130,20 +139,21 @@ gh project item-add PROJECT_NUMBER --owner OWNER --url ISSUE_URL
 
 ### 阶段 4: 并发实现
 
-**执行：**
-```
-调用 /gh-project-implement <project_number>
+**执行方式 [MANDATORY]**：
+
+必须使用 Bash tool 调用 batch_executor.py 脚本：
+```bash
+python3 ~/.claude/skills/gh-project-implement/scripts/get_project_issues.py --project <project_number> --json | \
+python3 ~/.claude/skills/gh-project-implement/scripts/priority_batcher.py --json | \
+python3 ~/.claude/skills/gh-project-implement/scripts/batch_executor.py --max-retries 3
 ```
 
-**期望结果：**
-- 按优先级批次实现（P0 → P1 → P2 → P3）
-- 每个 Issue 独立 worktree + Claude 会话
-- 自适应并发（P0=4, P1=3, P2=2, P3=1）
+**禁止**：
+- ❌ 使用 Task tool 调用 code/bugfix agent
+- ❌ 使用 Edit/Write 工具直接修改代码
+- ❌ 手动逐个实现 issue
 
-**错误处理：**
-- 单个 Issue 失败重试 3 次
-- 仍失败 → 跳过该 Issue，继续处理其他 Issue
-- 记录失败的 Issue 到最终报告
+batch_executor.py 内部会自动调用 `codeagent-wrapper --backend codex` 执行每个 issue。
 
 ### 阶段 5: 批量 PR 审查与合并
 
@@ -285,9 +295,14 @@ def gh_autopilot(input_arg, options):
         for issue in issues:
             run(f"gh project item-add {project.number} --owner {owner} --url {issue.url}")
 
-    # 阶段 4: 并发实现
+    # 阶段 4: 并发实现 [MUST use batch_executor.py]
     print("🔨 阶段 4/6: 并发实现...")
-    impl_result = invoke_skill("/gh-project-implement", project.number)
+    # 必须使用 Bash 调用脚本，禁止使用 Task tool
+    impl_result = run(f"""
+        python3 ~/.claude/skills/gh-project-implement/scripts/get_project_issues.py --project {project.number} --json | \
+        python3 ~/.claude/skills/gh-project-implement/scripts/priority_batcher.py --json | \
+        python3 ~/.claude/skills/gh-project-implement/scripts/batch_executor.py --max-retries 3
+    """)
     report.issues_implemented = impl_result.success_count
     report.impl_failures = impl_result.failures
 
