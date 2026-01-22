@@ -48,6 +48,7 @@ from typing import Any, Optional, TextIO
 
 DEFAULT_WORKTREE_SCRIPT = Path(__file__).parent / "worktree.py"
 SESSION_ID_PATTERN = re.compile(r"\bSESSION_ID\s*[:=]\s*([A-Za-z0-9._-]+)")
+ISSUE_BRANCH_PATTERN = re.compile(r"\bissue-(\d+)\b")
 
 
 @dataclass
@@ -79,11 +80,24 @@ class ExecState:
     current_process: Optional[subprocess.Popen] = None
     last_process: Optional[subprocess.Popen] = None
     session_ids: dict[int, str] = field(default_factory=dict)
+    # 资源追踪：用于 finally 阶段统一清理
+    created_issues: set[int] = field(default_factory=set)
     # 并发执行相关
     active_issues: set[int] = field(default_factory=set)
     active_processes: dict[int, subprocess.Popen] = field(default_factory=dict)
     active_worktrees: dict[int, Path] = field(default_factory=dict)
     lock: Lock = field(default_factory=Lock)
+
+
+@dataclass
+class CleanupReport:
+    tracked_issues: list[int] = field(default_factory=list)
+    worktree_removed: dict[int, tuple[bool, str]] = field(default_factory=dict)
+    worktree_force_used: set[int] = field(default_factory=set)
+    local_branch_deleted: dict[int, tuple[bool, str]] = field(default_factory=dict)
+    remote_branch_deleted: dict[int, tuple[bool, str]] = field(default_factory=dict)
+    prune_ok: bool = False
+    prune_detail: str = ""
 
 
 # ==================== 自适应并发数计算 ====================
@@ -432,6 +446,71 @@ def _cleanup_remote_branch(issue_number: int, repo_dir: Path, state: ExecState) 
     return False, detail or f"git push origin --delete {branch} 失败（exit={result.returncode}）"
 
 
+def _cleanup_local_branch(issue_number: int, repo_dir: Path, state: ExecState) -> tuple[bool, str]:
+    branch = f"issue-{issue_number}"
+    result = _run_capture(["git", "branch", "-D", branch], cwd=repo_dir, state=state)
+    if result.returncode == 0:
+        return True, ""
+
+    detail = (result.stderr or "").strip() or (result.stdout or "").strip()
+    detail_lower = detail.lower()
+    if "not found" in detail_lower and "branch" in detail_lower:
+        return True, ""
+
+    return False, detail or f"git branch -D {branch} 失败（exit={result.returncode}）"
+
+
+def _cleanup_all_resources(state: ExecState, repo_dir: Path, worktree_script: Path) -> CleanupReport:
+    report = CleanupReport()
+    with state.lock:
+        issue_numbers = sorted(state.created_issues)
+        active_worktrees = dict(state.active_worktrees)
+
+    report.tracked_issues = issue_numbers
+
+    for issue_number in issue_numbers:
+        # 1) 删除 worktree（失败则 --force）
+        worktree_ok, worktree_detail = _remove_worktree(worktree_script, issue_number, repo_dir, state)
+        worktree_detail_lower = (worktree_detail or "").lower()
+        if not worktree_ok and "worktree not found" in worktree_detail_lower:
+            worktree_ok, worktree_detail = True, ""
+
+        if not worktree_ok:
+            worktree_path = _get_worktree_path(worktree_script, issue_number, repo_dir, state)
+            if not worktree_path:
+                worktree_path = active_worktrees.get(issue_number)
+            if worktree_path:
+                report.worktree_force_used.add(issue_number)
+                ok2, detail2 = _force_remove_worktree(issue_number, worktree_path, repo_dir, state)
+                if ok2:
+                    worktree_ok, worktree_detail = True, ""
+                else:
+                    merged = "; ".join(x for x in [worktree_detail, detail2] if x)
+                    worktree_ok, worktree_detail = False, merged or worktree_detail or detail2
+
+        report.worktree_removed[issue_number] = (worktree_ok, worktree_detail)
+
+        # 2) 删除本地分支
+        lb_ok, lb_detail = _cleanup_local_branch(issue_number, repo_dir, state)
+        report.local_branch_deleted[issue_number] = (lb_ok, lb_detail)
+
+        # 3) 删除远端分支
+        rb_ok, rb_detail = _cleanup_remote_branch(issue_number, repo_dir, state)
+        report.remote_branch_deleted[issue_number] = (rb_ok, rb_detail)
+
+    # 4) 执行 git worktree prune
+    prune = _run_capture(["git", "worktree", "prune"], cwd=repo_dir, state=state)
+    if prune.returncode == 0:
+        report.prune_ok = True
+        report.prune_detail = ""
+    else:
+        detail = (prune.stderr or "").strip() or (prune.stdout or "").strip()
+        report.prune_ok = False
+        report.prune_detail = detail or f"git worktree prune 失败（exit={prune.returncode}）"
+
+    return report
+
+
 def _run_claude(issue_number: int, title: str, worktree_path: Path, state: ExecState) -> int:
     task_content = (
         f"实现 Issue #{issue_number}: {title}\n\n"
@@ -627,6 +706,249 @@ def _print_report(results: list[IssueResult], interrupted: bool) -> None:
         print(f"- 中断位置: {nums}")
 
 
+def _print_cleanup_report(report: CleanupReport) -> None:
+    print("\n===== Cleanup Report =====")
+
+    total = len(report.tracked_issues)
+    print(f"- 追踪 issues: {total}")
+    if total == 0:
+        print("- 无需清理")
+        return
+
+    worktree_ok = sum(1 for ok, _ in report.worktree_removed.values() if ok)
+    local_ok = sum(1 for ok, _ in report.local_branch_deleted.values() if ok)
+    remote_ok = sum(1 for ok, _ in report.remote_branch_deleted.values() if ok)
+
+    print(f"- worktree 清理: {worktree_ok}/{total}")
+    if report.worktree_force_used:
+        forced = sorted(report.worktree_force_used)
+        if len(forced) <= 20:
+            nums = " ".join(f"#{n}" for n in forced)
+            print(f"- worktree --force: {len(forced)} ({nums})")
+        else:
+            print(f"- worktree --force: {len(forced)}")
+    print(f"- 本地分支删除: {local_ok}/{total}")
+    print(f"- 远端分支删除: {remote_ok}/{total}")
+    print(f"- git worktree prune: {'OK' if report.prune_ok else 'FAILED'}")
+    if not report.prune_ok and report.prune_detail:
+        print(f"  - {report.prune_detail}")
+
+    def _print_failures(title: str, mapping: dict[int, tuple[bool, str]]) -> None:
+        failed_items = [(i, d) for i, (ok, d) in mapping.items() if not ok]
+        if not failed_items:
+            return
+        failed_items.sort(key=lambda x: x[0])
+        print(f"- {title} 失败: {len(failed_items)}")
+        for issue_number, detail in failed_items[:20]:
+            suffix = f": {detail}" if detail else ""
+            print(f"  - #{issue_number}{suffix}")
+        if len(failed_items) > 20:
+            print(f"  - ... 还有 {len(failed_items) - 20} 个")
+
+    _print_failures("worktree 清理", report.worktree_removed)
+    _print_failures("本地分支删除", report.local_branch_deleted)
+    _print_failures("远端分支删除", report.remote_branch_deleted)
+
+
+def _parse_issue_numbers_csv(value: str) -> list[int]:
+    items = [x.strip() for x in (value or "").split(",")]
+    parsed: list[int] = []
+    for item in items:
+        if not item:
+            continue
+        if not item.isdigit():
+            raise ValueError(f"无效 issue 编号: {item}")
+        num = int(item)
+        if num <= 0:
+            raise ValueError(f"无效 issue 编号: {item}")
+        parsed.append(num)
+
+    seen: set[int] = set()
+    deduped: list[int] = []
+    for num in parsed:
+        if num in seen:
+            continue
+        seen.add(num)
+        deduped.append(num)
+    return deduped
+
+
+def _extract_issue_numbers(text: str) -> set[int]:
+    matches = ISSUE_BRANCH_PATTERN.findall(text or "")
+    return {int(m) for m in matches if m.isdigit() and int(m) > 0}
+
+
+def _collect_issue_numbers(repo_dir: Path, state: ExecState) -> set[int]:
+    candidates: set[int] = set()
+    cmds = [
+        ["git", "branch", "--list", "issue-*"],
+        ["git", "branch", "-r", "--list", "origin/issue-*"],
+        ["git", "worktree", "list", "--porcelain"],
+    ]
+    for cmd in cmds:
+        result = _run_capture(cmd, cwd=repo_dir, state=state)
+        if result.returncode != 0:
+            continue
+        candidates |= _extract_issue_numbers(result.stdout or "")
+    return candidates
+
+
+def _get_default_base_ref(repo_dir: Path, state: ExecState) -> str:
+    result = _run_capture(["git", "symbolic-ref", "refs/remotes/origin/HEAD"], cwd=repo_dir, state=state)
+    if result.returncode == 0:
+        ref = (result.stdout or "").strip()
+        if ref:
+            parts = [p for p in ref.split("/") if p]
+            if len(parts) >= 2:
+                return "/".join(parts[-2:])
+    return "origin/main"
+
+
+def _is_issue_merged_via_git(issue_number: int, repo_dir: Path, state: ExecState) -> tuple[Optional[bool], str]:
+    base_ref = _get_default_base_ref(repo_dir, state)
+    result = _run_capture(
+        ["git", "branch", "--merged", base_ref, "--list", f"issue-{issue_number}"],
+        cwd=repo_dir,
+        state=state,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or "").strip() or (result.stdout or "").strip()
+        detail = detail or f"git branch --merged {base_ref} 失败（exit={result.returncode}）"
+        return None, detail
+    merged = bool((result.stdout or "").strip())
+    if merged:
+        return True, f"git: merged into {base_ref}"
+    return False, ""
+
+
+def _is_issue_merged_via_gh(
+    issue_number: int,
+    repo: Optional[str],
+    repo_dir: Path,
+    state: ExecState,
+) -> tuple[Optional[bool], str]:
+    cmd = ["gh", "pr", "list", "--state", "merged", "--head", f"issue-{issue_number}"]
+    if repo:
+        cmd += ["--repo", repo]
+    cmd += ["--json", "number", "-q", ".[0].number"]
+
+    result = _run_capture(cmd, cwd=repo_dir, state=state)
+    if result.returncode == 0:
+        raw = (result.stdout or "").strip()
+        if raw and raw != "null":
+            return True, ""
+        return False, ""
+
+    detail = (result.stderr or "").strip() or (result.stdout or "").strip()
+    if result.returncode == 127:
+        return None, detail or "gh 不存在"
+    return None, detail or f"gh pr list 失败（exit={result.returncode}）"
+
+
+def _is_issue_merged(
+    issue_number: int,
+    repo: Optional[str],
+    repo_dir: Path,
+    state: ExecState,
+) -> tuple[Optional[bool], str]:
+    merged, detail = _is_issue_merged_via_gh(issue_number, repo, repo_dir, state)
+    if merged is not None:
+        return merged, detail
+    return _is_issue_merged_via_git(issue_number, repo_dir, state)
+
+
+def cmd_cleanup(args, repo_dir: Path, worktree_script: Path) -> int:
+    """
+    手动清理 issue-* 相关资源。
+
+    - 默认：清理所有已合并的 issue-* 分支
+    - --cleanup-force：清理所有 issue-* 分支（不检查是否合并）
+    - --cleanup-issues：仅清理指定 issue（逗号分隔）；与 --cleanup-force 同时使用时不检查是否合并
+    """
+    state = ExecState()
+    started = time.monotonic()
+
+    cleanup_force = bool(getattr(args, "cleanup_force", False))
+    raw_issues = getattr(args, "cleanup_issues", None)
+    specified: list[int] = []
+    if raw_issues:
+        try:
+            specified = _parse_issue_numbers_csv(str(raw_issues))
+        except ValueError as e:
+            print(f"Error: --cleanup-issues 解析失败: {e}", file=sys.stderr)
+            return 2
+
+    candidates = set(specified) if specified else _collect_issue_numbers(repo_dir, state)
+    candidates = {n for n in candidates if n > 0}
+
+    print("\n🧹 手动清理: --cleanup", flush=True)
+    mode = "force" if cleanup_force else "merged-only"
+    if specified:
+        print(f"- 模式: {mode} (指定 issues)", flush=True)
+    else:
+        print(f"- 模式: {mode}", flush=True)
+    print(f"- 仓库目录: {repo_dir}", flush=True)
+    print(f"- 候选 issues: {len(candidates)}", flush=True)
+
+    if not candidates:
+        print("- 无需清理", flush=True)
+        return 0
+
+    to_clean: list[int] = []
+    skipped_not_merged: list[int] = []
+    skipped_unknown: dict[int, str] = {}
+
+    for issue_number in sorted(candidates):
+        if cleanup_force:
+            to_clean.append(issue_number)
+            continue
+
+        merged, detail = _is_issue_merged(issue_number, getattr(args, "repo", None), repo_dir, state)
+        if merged is True:
+            to_clean.append(issue_number)
+            continue
+        if merged is False:
+            skipped_not_merged.append(issue_number)
+            continue
+        skipped_unknown[issue_number] = detail or "无法确认是否已合并"
+
+    if skipped_not_merged:
+        nums = " ".join(f"#{n}" for n in skipped_not_merged[:50])
+        suffix = "" if len(skipped_not_merged) <= 50 else f" ...(+{len(skipped_not_merged) - 50})"
+        print(f"- 跳过未合并: {len(skipped_not_merged)} ({nums}{suffix})", flush=True)
+
+    if skipped_unknown:
+        keys = sorted(skipped_unknown)[:20]
+        nums = " ".join(f"#{n}" for n in keys)
+        suffix = "" if len(skipped_unknown) <= 20 else f" ...(+{len(skipped_unknown) - 20})"
+        print(f"- 跳过(状态未知): {len(skipped_unknown)} ({nums}{suffix})", flush=True)
+        first = keys[0]
+        print(f"  - 例: #{first}: {skipped_unknown[first]}", flush=True)
+
+    print(f"- 将清理: {len(to_clean)}", flush=True)
+    if not to_clean:
+        print("- 无需清理", flush=True)
+        return 0
+
+    state.created_issues = set(to_clean)
+    report = _cleanup_all_resources(state=state, repo_dir=repo_dir, worktree_script=worktree_script)
+    _print_cleanup_report(report)
+
+    failures = (
+        sum(1 for ok, _ in report.worktree_removed.values() if not ok)
+        + sum(1 for ok, _ in report.local_branch_deleted.values() if not ok)
+        + sum(1 for ok, _ in report.remote_branch_deleted.values() if not ok)
+        + (0 if report.prune_ok else 1)
+    )
+    elapsed = time.monotonic() - started
+    print(f"\n- 清理耗时: {_format_duration(elapsed)}", flush=True)
+    if failures:
+        print(f"⚠️ 清理完成（失败项: {failures}）", flush=True)
+        return 1
+    print("✅ 清理完成", flush=True)
+    return 0
+
+
 # ==================== 并发执行核心函数 ====================
 
 def _execute_single_issue(
@@ -650,6 +972,10 @@ def _execute_single_issue(
     issue_number = spec.number
     priority = spec.priority or "p2"
     title = spec.title or ""
+
+    # 资源追踪：即使后续步骤失败也要记录
+    with state.lock:
+        state.created_issues.add(issue_number)
 
     issue_start = time.monotonic()
     observed_pr_number: Optional[int] = None
@@ -977,6 +1303,20 @@ def main() -> None:
         help="清理 worktree 失败时，尝试使用 git worktree remove --force",
     )
     parser.add_argument(
+        "--cleanup",
+        action="store_true",
+        help="手动清理 issue-* 相关资源（默认仅清理已合并分支）",
+    )
+    parser.add_argument(
+        "--cleanup-force",
+        action="store_true",
+        help="与 --cleanup 一起使用：清理所有 issue-* 分支（不检查是否合并）",
+    )
+    parser.add_argument(
+        "--cleanup-issues",
+        help="与 --cleanup 一起使用：仅清理指定 issue 编号列表（逗号分隔，如 123,124）",
+    )
+    parser.add_argument(
         "--max-retries",
         type=int,
         default=3,
@@ -993,13 +1333,16 @@ def main() -> None:
     repo_dir = Path(args.repo_dir).expanduser().resolve()
     worktree_script = Path(args.worktree_script).expanduser().resolve()
 
-    if args.max_retries < 0:
-        print("Error: --max-retries 必须 >= 0", file=sys.stderr)
-        sys.exit(2)
-
     if not worktree_script.exists():
         print(f"Error: worktree.py 不存在: {worktree_script}", file=sys.stderr)
         sys.exit(1)
+
+    if args.cleanup:
+        sys.exit(cmd_cleanup(args=args, repo_dir=repo_dir, worktree_script=worktree_script))
+
+    if args.max_retries < 0:
+        print("Error: --max-retries 必须 >= 0", file=sys.stderr)
+        sys.exit(2)
 
     state = ExecState()
     results: list[IssueResult] = []
@@ -1080,12 +1423,20 @@ def main() -> None:
                 _force_remove_worktree(issue_num, worktree_path, repo_dir, state)
 
     finally:
+        cleanup_report: Optional[CleanupReport] = None
+        try:
+            cleanup_report = _cleanup_all_resources(state=state, repo_dir=repo_dir, worktree_script=worktree_script)
+        except Exception as e:
+            print(f"Warning: 资源清理异常: {e}", file=sys.stderr)
+
         if tty_stdin:
             try:
                 tty_stdin.close()
             except Exception:
                 pass
         _print_report(results, interrupted=state.interrupted)
+        if cleanup_report is not None:
+            _print_cleanup_report(cleanup_report)
 
     if state.interrupted:
         sys.exit(130)
