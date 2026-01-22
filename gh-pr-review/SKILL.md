@@ -200,7 +200,8 @@ Once all issues resolved and CI green:
 
 1. **Post Review Comment:**
    ```bash
-   gh pr review $PR_NUMBER --approve --body "$(cat <<'EOF'
+   # Create review body file
+   cat > /tmp/review-body.md << REVIEW
    ## Code Review Summary
 
    ### Changes Reviewed
@@ -216,8 +217,9 @@ Once all issues resolved and CI green:
    Approved for merge.
 
    Reviewed by Claude Code
-   EOF
-   )"
+   REVIEW
+
+   gh pr review $PR_NUMBER --approve --body-file /tmp/review-body.md
    ```
 
 2. **If Fixes Were Made:**

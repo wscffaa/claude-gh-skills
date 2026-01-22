@@ -9,7 +9,7 @@ Implement GitHub issues with full development lifecycle from issue analysis to P
 
 ## Purpose
 
-Drive the complete issue-to-PR workflow: fetch issue details, analyze requirements, execute development using the dev skill, track progress, and create a pull request that closes the issue.
+Drive the complete issue-to-PR workflow: fetch issue details, analyze requirements, execute development via codeagent-wrapper, track progress, and create a pull request that closes the issue.
 
 ## When to Use
 
@@ -60,25 +60,32 @@ Present lean implementation options with trade-offs when choices exist. Confirm 
 ### Phase 3: Development
 
 **For Simple/Focused Issues:**
-Invoke the `dev` skill directly:
+Invoke codeagent-wrapper:
 ```bash
-# The dev skill will handle requirements clarification,
-# backend selection, parallel execution, and test coverage
+# Create prompt file with requirements
+cat > /tmp/codeagent-prompt.txt << PROMPT
+实现 Issue #{issue_number}: {issue_title}
+
+Requirements:
+- [从 issue 解析出的需求列表]
+
+Deliverables:
+- 代码实现
+- 单元测试 (覆盖率 ≥90%)
+- 更新相关文档
+PROMPT
+
+# Execute codeagent-wrapper with input file
+codeagent-wrapper --backend codex - < /tmp/codeagent-prompt.txt
 ```
 
-Pass the parsed requirements and acceptance criteria to the dev skill. The dev skill will:
-- Clarify any remaining requirements
-- Select appropriate backend (Codex/Claude/Gemini)
-- Execute development with parallel codeagent calls
+Pass the parsed requirements and acceptance criteria into the wrapper payload. The wrapper will:
+- Execute development with the specified backend
 - Enforce 90% test coverage
 - Validate all acceptance criteria
 
 **For Complex Features:**
-The dev skill automatically handles complexity through:
-- Multi-phase development workflow
-- Parallel codeagent execution for independent tasks
-- Comprehensive test coverage validation
-- Iterative refinement based on test results
+Use the same wrapper approach with a more detailed requirements list and acceptance criteria, splitting deliverables into incremental batches as needed.
 
 ### Phase 4: Progress Updates
 
@@ -121,9 +128,8 @@ Update frequency:
    ```bash
    git push -u origin issue-$ISSUE_NUMBER
 
-   gh pr create \
-     --title "Fix #$ISSUE_NUMBER: [Issue title]" \
-     --body "$(cat <<'EOF'
+   # Create PR body file
+   cat > /tmp/pr-body.md << BODY
    ## Summary
    Implements #$ISSUE_NUMBER
 
@@ -137,8 +143,11 @@ Update frequency:
 
    ## Closes
    Closes #$ISSUE_NUMBER
-   EOF
-   )"
+   BODY
+
+   gh pr create \
+     --title "Fix #$ISSUE_NUMBER: [Issue title]" \
+     --body-file /tmp/pr-body.md
    ```
 
 5. **Return PR URL:**
@@ -162,16 +171,11 @@ Update frequency:
 - Ensure all changes are committed
 - Surface error message and suggest resolution
 
-## Integration with Dev Skill
+## Integration with Codeagent Wrapper
 
-This skill delegates actual development to the `dev` skill, which provides:
-- Requirements clarification workflow
-- Intelligent backend selection (Codex/Claude/Gemini)
-- Parallel codeagent execution for efficiency
-- Mandatory 90% test coverage enforcement
-- Comprehensive validation and verification
+This skill delegates actual development to `codeagent-wrapper` with a structured prompt that includes the issue context, requirements, and deliverables. Use the wrapper to specify the backend (e.g., `codex`) and keep all development work, tests, and documentation updates encapsulated in the wrapper execution.
 
-The dev skill handles all code generation, testing, and quality assurance, while this skill manages the GitHub-specific workflow (issue tracking, PR creation, progress updates).
+The wrapper handles code generation, testing, and quality assurance, while this skill manages the GitHub-specific workflow (issue tracking, PR creation, progress updates).
 
 ## Best Practices
 
@@ -201,7 +205,7 @@ Skill Actions:
 1. Fetch issue #42 details
 2. Parse: "Add user authentication with JWT"
 3. Explore codebase for auth patterns
-4. Invoke dev skill with requirements
+4. Invoke codeagent-wrapper with requirements
 5. Post progress updates to issue
 6. Create PR linking to issue #42
 ```
