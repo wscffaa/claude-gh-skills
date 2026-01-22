@@ -35,6 +35,7 @@ import argparse
 import asyncio
 import json
 import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -44,6 +45,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock
 from typing import Any, Optional, TextIO
+
+# 导入安全命令构造模块（如果存在）
+try:
+    from safe_command import (
+        SafeCommandBuilder,
+        run_command_with_stdin,
+        build_codeagent_command,
+        escape_for_logging,
+    )
+    HAS_SAFE_COMMAND = True
+except ImportError:
+    HAS_SAFE_COMMAND = False
 
 
 DEFAULT_WORKTREE_SCRIPT = Path(__file__).parent / "worktree.py"
@@ -511,9 +524,22 @@ def _cleanup_all_resources(state: ExecState, repo_dir: Path, worktree_script: Pa
     return report
 
 
-def _run_claude(issue_number: int, title: str, worktree_path: Path, state: ExecState) -> int:
-    task_content = (
-        f"实现 Issue #{issue_number}: {title}\n\n"
+def _build_task_content(issue_number: int, title: str) -> str:
+    """
+    构建任务内容，确保特殊字符安全处理。
+
+    Args:
+        issue_number: Issue 编号
+        title: Issue 标题
+
+    Returns:
+        格式化的任务内容字符串
+    """
+    # 对标题进行安全处理，移除可能导致问题的控制字符
+    safe_title = title.replace("\r", "").replace("\0", "")
+
+    return (
+        f"实现 Issue #{issue_number}: {safe_title}\n\n"
         "Requirements:\n"
         "- 参考 issue 描述完成开发任务\n"
         f"- 创建 issue-{issue_number} 分支\n"
@@ -523,7 +549,46 @@ def _run_claude(issue_number: int, title: str, worktree_path: Path, state: ExecS
         "- 单元测试\n"
         f"- 创建 PR (分支名: issue-{issue_number})\n"
     )
+
+
+def _build_codeagent_cmd(backend: str = "codex") -> list[str]:
+    """
+    使用安全方式构建 codeagent-wrapper 命令。
+
+    Args:
+        backend: 后端类型
+
+    Returns:
+        命令参数列表
+    """
+    if HAS_SAFE_COMMAND:
+        builder = build_codeagent_command(backend=backend, use_stdin=True)
+        return builder.build()
+    else:
+        # 回退到直接列表构造（仍然安全，因为不经过 shell）
+        return ["codeagent-wrapper", "--backend", shlex.quote(backend), "-"]
+
+
+def _run_claude(issue_number: int, title: str, worktree_path: Path, state: ExecState) -> int:
+    """
+    使用 codeagent-wrapper 执行 Issue 实现任务。
+
+    通过 stdin 传递任务内容，避免 heredoc 和特殊字符问题。
+
+    Args:
+        issue_number: Issue 编号
+        title: Issue 标题
+        worktree_path: worktree 路径
+        state: 执行状态
+
+    Returns:
+        进程返回码
+    """
+    task_content = _build_task_content(issue_number, title)
+
+    # 使用列表模式构造命令，避免 shell 解析
     cmd = ["codeagent-wrapper", "--backend", "codex", "-"]
+
     try:
         proc = subprocess.Popen(
             cmd,
@@ -539,6 +604,7 @@ def _run_claude(issue_number: int, title: str, worktree_path: Path, state: ExecS
     state.current_process = proc
     state.last_process = proc
     try:
+        # 通过 stdin.PIPE 传递内容，避免 heredoc 格式问题
         stdout, stderr = proc.communicate(input=task_content)
     finally:
         state.current_process = None
@@ -569,20 +635,50 @@ def _get_pr_number(issue_number: int, repo: Optional[str], cwd: Path, state: Exe
     return None
 
 
-def _run_pr_review(
-    pr_number: int,
-    worktree_path: Path,
-    tty_stdin: Optional[TextIO],
-    state: ExecState,
-) -> int:
-    task_content = (
+def _build_pr_review_content(pr_number: int) -> str:
+    """
+    构建 PR 审查任务内容。
+
+    Args:
+        pr_number: PR 编号
+
+    Returns:
+        格式化的任务内容字符串
+    """
+    return (
         f"审查并处理 PR #{pr_number}\n\n"
         "Requirements:\n"
         "- 检查 PR 代码质量\n"
         "- 运行相关测试\n"
         "- 如有问题，提供修复建议\n"
     )
+
+
+def _run_pr_review(
+    pr_number: int,
+    worktree_path: Path,
+    tty_stdin: Optional[TextIO],
+    state: ExecState,
+) -> int:
+    """
+    使用 codeagent-wrapper 执行 PR 审查任务。
+
+    通过 stdin 传递任务内容，避免 heredoc 和特殊字符问题。
+
+    Args:
+        pr_number: PR 编号
+        worktree_path: worktree 路径
+        tty_stdin: TTY stdin（用于交互）
+        state: 执行状态
+
+    Returns:
+        进程返回码
+    """
+    task_content = _build_pr_review_content(pr_number)
+
+    # 使用列表模式构造命令，避免 shell 解析
     cmd = ["codeagent-wrapper", "--backend", "codex", "-"]
+
     try:
         proc = subprocess.Popen(
             cmd,
@@ -598,6 +694,7 @@ def _run_pr_review(
     state.current_process = proc
     state.last_process = proc
     try:
+        # 通过 stdin.PIPE 传递内容，避免 heredoc 格式问题
         stdout, stderr = proc.communicate(input=task_content)
     finally:
         state.current_process = None

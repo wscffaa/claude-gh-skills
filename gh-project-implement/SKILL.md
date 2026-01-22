@@ -83,7 +83,7 @@ python3 scripts/batch_executor.py --input <batcher_output.json> --max-retries 3
 对每个批次并发执行（DAG 调度）：
 1. 计算自适应并发数
 2. 获取可执行的 issues（依赖已完成）
-3. 并发创建 worktree 并启动 Claude 会话
+3. 并发创建 worktree 并启动 codeagent-wrapper 执行开发任务（替代 `claude -p /gh-issue-implement`）
 4. 完成后立即 Review + Merge
 5. 等待所有任务完成后进入下一批次
 
@@ -161,7 +161,7 @@ python3 scripts/batch_executor.py --input batches.json --max-workers 2  # 覆盖
 
 - 需要 gh CLI 2.0+ 并已认证
 - 需要 `project` scope 权限
-- 依赖 `gh-issue-implement` 和 `gh-pr-review` skills
+- 依赖 `codeagent-wrapper` CLI 和 `gh-pr-review` skill
 
 ## 目录结构
 
