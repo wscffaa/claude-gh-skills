@@ -15,6 +15,8 @@ description: Project 级别批量 PR 审查与合并。
 | `/gh-project-pr <number> --dry-run` | 预览模式：只显示待审查 PR，不执行审查 |
 | `/gh-project-pr <number> --json` | JSON 格式输出 |
 | `/gh-project-pr <number> --user` | 用户级 Project |
+| `/gh-project-pr <number> --auto-merge` | 审查通过后自动 squash 合并并清理分支 |
+| `/gh-project-pr <number> --review-backend codex` | 启用 Codex 审查 gate（推荐与 gh-autopilot 搭配） |
 
 ## 核心功能
 
@@ -48,6 +50,18 @@ gh project item-list <number> --owner <owner> --format json
    gh pr list --search "Closes #<N> in:body"
    # 还会尝试: Fixes #<N>, Resolves #<N>
    ```
+
+### Phase 3: 排序与过滤
+
+使用 `sort_by_priority.py` 按 `priority:p0-p3` 进行排序，并默认过滤已合并 PR。
+
+### Phase 4: 批量审查 + CI gate + 自动合并（batch_review.py）
+
+当启用自动审查时，`batch_review.py` 会对每个 PR 执行以下 gate：
+- **Codex 审查 gate**：调用 `codex_review.py`，通过 `codeagent-wrapper --backend codex` 返回结构化 verdict（approved/blocking/summary/confidence）
+- **CI gate**：调用 `ci_gate.py` 等待 checks 全部通过（failure/timeout 将阻断合并）
+
+仅当 “Codex approved + CI success” 同时满足时才会执行合并。合并策略为 **squash merge**（带 `--yes` 避免交互），合并成功后会通过 `gh api -X DELETE ...` 清理远端分支。
 
 ## 用法
 
@@ -97,6 +111,23 @@ python3 scripts/get_project_prs.py --project 1 --owner wscffaa --json
 # 用户级 Project（与默认行为相同）
 python3 scripts/get_project_prs.py --project 1 --user --json
 ```
+
+### 批量审查与合并（batch_review.py）
+
+`batch_review.py` 需要一个输入 JSON（来自 `sort_by_priority.py` 或 `get_project_prs.py --json`），并输出结构化 JSON 结果：
+
+```bash
+# 仅审查（不合并）
+python3 scripts/batch_review.py --input sorted.json
+
+# 审查通过后自动 squash 合并 + 分支清理
+python3 scripts/batch_review.py --input sorted.json --auto-merge
+
+# 显式指定 Codex 审查后端（推荐；与 gh-autopilot 对齐）
+python3 scripts/batch_review.py --input sorted.json --auto-merge --review-backend codex
+```
+
+> 兼容性说明：旧版本脚本可能不支持 `--review-backend`，此时可省略该参数（或由上层编排自动回退）。
 
 ## 输出格式
 
@@ -186,6 +217,7 @@ python3 scripts/get_project_prs.py --project 1 --json | \
 
 - 需要 gh CLI 2.0+ 并已认证
 - 需要 `project` 和 `repo` scope 权限
+- 启用 Codex 审查时需要本地可用的 `codeagent-wrapper`，并支持 `--backend codex`
 - 大型 Project 可能需要较长执行时间（每个 Issue 最多 3 次 API 调用）
 
 ## 目录结构

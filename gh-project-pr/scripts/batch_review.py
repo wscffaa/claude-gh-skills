@@ -32,12 +32,14 @@
 """
 
 import argparse
+import importlib.util
 import json
 import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
 
@@ -83,6 +85,27 @@ def _run_gh_json(cmd: list[str], timeout: int = 60) -> Optional[dict | list]:
         return json.loads(stdout)
     except json.JSONDecodeError:
         return None
+
+
+def _load_sibling_module(module_name: str, filename: str):
+    """
+    以固定模块名加载同目录下的模块文件。
+
+    说明：测试中使用 `scripts/<name>` 作为 module key 以便 pytest-cov 采集覆盖率，
+    此处沿用相同命名，避免重复加载。
+    """
+    if module_name in sys.modules:
+        return sys.modules[module_name]
+
+    module_path = Path(__file__).resolve().parent / filename
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    if not spec or not spec.loader:
+        raise ImportError(f"failed to load module: {filename}")
+
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def check_pr_status(pr_number: int) -> dict:
@@ -134,6 +157,85 @@ def check_pr_status(pr_number: int) -> dict:
     mergeable = data.get("mergeable", "") == "MERGEABLE"
 
     return {"state": "open", "mergeable": mergeable, "ci_status": ci_status}
+
+
+def get_pr_metadata(pr_number: int) -> dict:
+    """
+    获取 PR 元信息（state/mergeable/head repo+sha+branch）。
+
+    返回:
+        {
+          "state": "open|merged|closed|unknown",
+          "mergeable": bool,
+          "head_repo": Optional[str],
+          "head_sha": Optional[str],
+          "head_ref": Optional[str],
+        }
+    """
+    data = _run_gh_json(
+        [
+            "gh",
+            "pr",
+            "view",
+            str(pr_number),
+            "--json",
+            "state,mergeable,headRefOid,headRefName,headRepository,headRepositoryOwner",
+        ],
+        timeout=30,
+    )
+
+    if not isinstance(data, dict):
+        return {
+            "state": "unknown",
+            "mergeable": False,
+            "head_repo": None,
+            "head_sha": None,
+            "head_ref": None,
+        }
+
+    state_raw = str(data.get("state") or "").upper()
+    if state_raw == "MERGED":
+        state = "merged"
+    elif state_raw == "CLOSED":
+        state = "closed"
+    elif state_raw:
+        state = "open"
+    else:
+        state = "unknown"
+
+    mergeable = str(data.get("mergeable") or "") == "MERGEABLE"
+
+    head_repo = None
+    head_repo_raw = data.get("headRepository")
+    head_owner_raw = data.get("headRepositoryOwner")
+    if isinstance(head_repo_raw, dict):
+        nwo = head_repo_raw.get("nameWithOwner")
+        if nwo:
+            head_repo = str(nwo)
+        else:
+            # Construct from headRepositoryOwner + headRepository.name
+            head_name = head_repo_raw.get("name")
+            owner = None
+            if isinstance(head_owner_raw, dict):
+                owner = head_owner_raw.get("login")
+            if owner and head_name:
+                head_repo = f"{owner}/{head_name}"
+
+    head_sha = data.get("headRefOid")
+    if head_sha is not None:
+        head_sha = str(head_sha)
+
+    head_ref = data.get("headRefName")
+    if head_ref is not None:
+        head_ref = str(head_ref)
+
+    return {
+        "state": state,
+        "mergeable": mergeable,
+        "head_repo": head_repo,
+        "head_sha": head_sha,
+        "head_ref": head_ref,
+    }
 
 
 def wait_for_ci(pr_number: int, timeout_s: int = 600, interval_s: int = 30) -> str:
@@ -188,7 +290,7 @@ def merge_pr(pr_number: int, squash: bool = True) -> tuple[bool, str]:
 
     返回: (success, error_message)
     """
-    cmd = ["gh", "pr", "merge", str(pr_number), "--delete-branch"]
+    cmd = ["gh", "pr", "merge", str(pr_number), "--yes"]
     if squash:
         cmd.append("--squash")
     else:
@@ -201,10 +303,31 @@ def merge_pr(pr_number: int, squash: bool = True) -> tuple[bool, str]:
     return False, stderr.strip() or "merge failed"
 
 
+def delete_branch(repo: str, branch: str) -> tuple[bool, str]:
+    """
+    删除远端分支（通过 GitHub API）。
+
+    返回: (success, error_message)
+    """
+    if not repo or not branch:
+        return False, "missing repo or branch"
+
+    # GitHub API: DELETE /repos/{owner}/{repo}/git/refs/heads/{ref}
+    cmd = ["gh", "api", "-X", "DELETE", f"repos/{repo}/git/refs/heads/{branch}"]
+    returncode, stdout, stderr = _run_gh(cmd, timeout=60)
+
+    if returncode == 0:
+        return True, ""
+
+    msg = (stderr or "").strip() or (stdout or "").strip() or "delete branch failed"
+    return False, msg
+
+
 def review_single_pr(
     issue: int,
     pr: int,
     auto_merge: bool = False,
+    review_backend: str = "codex",
     max_retries: int = 1,
     verbose: bool = False,
 ) -> ReviewResult:
@@ -225,11 +348,11 @@ def review_single_pr(
         if verbose:
             print(f"  [PR #{pr}] {msg}", file=sys.stderr)
 
-    # Phase 1: 检查状态
-    log("检查 PR 状态...")
-    status = check_pr_status(pr)
+    # Phase 1: 获取 PR 元信息
+    log("检查 PR 元信息...")
+    meta = get_pr_metadata(pr)
 
-    if status["state"] == "merged":
+    if meta["state"] == "merged":
         log("已合并，跳过")
         return ReviewResult(
             issue=issue,
@@ -239,7 +362,7 @@ def review_single_pr(
             duration_s=time.time() - start_time,
         )
 
-    if status["state"] == "closed":
+    if meta["state"] == "closed":
         log("已关闭，跳过")
         return ReviewResult(
             issue=issue,
@@ -249,27 +372,105 @@ def review_single_pr(
             duration_s=time.time() - start_time,
         )
 
-    # Phase 2: 等待 CI
-    if status["ci_status"] == "pending":
-        log("CI 运行中，等待...")
-        ci_result = wait_for_ci(pr, timeout_s=600, interval_s=30)
-        if ci_result == "timeout":
-            return ReviewResult(
-                issue=issue,
-                pr=pr,
-                status="failed",
-                error="CI timeout",
-                duration_s=time.time() - start_time,
-            )
-        elif ci_result == "fail":
-            return ReviewResult(
-                issue=issue,
-                pr=pr,
-                status="failed",
-                error="CI failed",
-                duration_s=time.time() - start_time,
-            )
-    elif status["ci_status"] == "fail":
+    if meta["state"] != "open":
+        return ReviewResult(
+            issue=issue,
+            pr=pr,
+            status="failed",
+            error=f"unknown PR state: {meta['state']}",
+            duration_s=time.time() - start_time,
+        )
+
+    # Phase 2: Codex review gate
+    log("Codex review gate...")
+    try:
+        codex_review = _load_sibling_module("scripts/codex_review", "codex_review.py")
+        verdict = codex_review.review_pr_with_codex(
+            pr,
+            backend=review_backend,
+            max_retries=max_retries,
+            workdir=str(Path(__file__).resolve().parents[1]),
+        )
+    except Exception as e:
+        return ReviewResult(
+            issue=issue,
+            pr=pr,
+            status="failed",
+            error=f"codex review error: {e}",
+            duration_s=time.time() - start_time,
+        )
+
+    if not isinstance(verdict, dict) or not verdict.get("approved", False):
+        blocking = None
+        summary = None
+        if isinstance(verdict, dict):
+            blocking = verdict.get("blocking")
+            summary = verdict.get("summary")
+        detail = ""
+        if summary:
+            detail = f"summary={summary}"
+        if blocking:
+            joined = ", ".join(str(x) for x in blocking) if isinstance(blocking, list) else str(blocking)
+            detail = (detail + "; " if detail else "") + f"blocking={joined}"
+        return ReviewResult(
+            issue=issue,
+            pr=pr,
+            status="failed",
+            error=f"codex not approved{(': ' + detail) if detail else ''}",
+            duration_s=time.time() - start_time,
+        )
+
+    # Phase 3: CI gate
+    head_repo = meta.get("head_repo")
+    if not head_repo:
+        return ReviewResult(
+            issue=issue,
+            pr=pr,
+            status="failed",
+            error="missing PR head repo for CI gate",
+            duration_s=time.time() - start_time,
+        )
+
+    log("CI gate...")
+    try:
+        ci_gate = _load_sibling_module("scripts/ci_gate", "ci_gate.py")
+        returncode, stdout, stderr = _run_gh(
+            [
+                "gh",
+                "pr",
+                "view",
+                str(pr),
+                "--json",
+                "headRefOid",
+                "-q",
+                ".headRefOid",
+            ],
+            timeout=30,
+        )
+        head_sha = (stdout or "").strip() if returncode == 0 else ""
+        if not head_sha:
+            msg = (stderr or "").strip() or "failed to get PR head sha"
+            raise RuntimeError(msg)
+
+        ci_state = ci_gate.get_ci_state(head_repo, head_sha)
+    except Exception as e:
+        return ReviewResult(
+            issue=issue,
+            pr=pr,
+            status="failed",
+            error=f"ci gate error: {e}",
+            duration_s=time.time() - start_time,
+        )
+
+    if ci_state == "pending":
+        return ReviewResult(
+            issue=issue,
+            pr=pr,
+            status="failed",
+            error="CI pending",
+            duration_s=time.time() - start_time,
+        )
+    if ci_state != "success":
         return ReviewResult(
             issue=issue,
             pr=pr,
@@ -278,7 +479,7 @@ def review_single_pr(
             duration_s=time.time() - start_time,
         )
 
-    # Phase 3: 批准 PR
+    # Phase 4: 批准 PR
     log("批准 PR...")
     for attempt in range(max_retries):
         success, err = approve_pr(pr)
@@ -296,25 +497,34 @@ def review_single_pr(
             duration_s=time.time() - start_time,
         )
 
-    # Phase 4: 合并（如果 auto_merge）
+    # Phase 5: 合并（仅在 Codex approved + CI success + auto_merge 时执行）
     if auto_merge:
-        log("合并 PR...")
+        log("合并 PR (squash)...")
         # 重新检查 mergeable 状态
-        status = check_pr_status(pr)
-        if not status.get("mergeable", False):
+        meta = get_pr_metadata(pr)
+        if not meta.get("mergeable", False):
             # 可能需要等待 approval 生效
             time.sleep(3)
-            status = check_pr_status(pr)
+            meta = get_pr_metadata(pr)
 
         for attempt in range(max_retries):
             success, err = merge_pr(pr)
             if success:
-                log("合并成功")
+                log("合并成功，删除分支...")
+                cleanup_error = None
+                head_repo = meta.get("head_repo")
+                head_ref = meta.get("head_ref")
+                if head_repo and head_ref:
+                    deleted, del_err = delete_branch(head_repo, head_ref)
+                    if not deleted:
+                        cleanup_error = f"branch cleanup failed: {del_err}"
+                else:
+                    cleanup_error = "branch cleanup failed: missing head repo/ref"
                 return ReviewResult(
                     issue=issue,
                     pr=pr,
                     status="merged",
-                    error=None,
+                    error=cleanup_error,
                     duration_s=time.time() - start_time,
                 )
             if attempt < max_retries - 1:
@@ -343,6 +553,7 @@ def review_single_pr(
 def batch_review_serial(
     items: list[dict],
     auto_merge: bool = False,
+    review_backend: str = "codex",
     max_retries: int = 1,
     verbose: bool = False,
 ) -> list[ReviewResult]:
@@ -374,6 +585,7 @@ def batch_review_serial(
             issue=issue,
             pr=pr,
             auto_merge=auto_merge,
+            review_backend=review_backend,
             max_retries=max_retries,
             verbose=verbose,
         )
@@ -393,6 +605,7 @@ def batch_review_serial(
 def batch_review_parallel(
     items: list[dict],
     auto_merge: bool = False,
+    review_backend: str = "codex",
     max_retries: int = 1,
     max_workers: int = 4,
     verbose: bool = False,
@@ -431,6 +644,7 @@ def batch_review_parallel(
                 issue=item["issue"],
                 pr=item["pr"],
                 auto_merge=auto_merge,
+                review_backend=review_backend,
                 max_retries=max_retries,
                 verbose=verbose,
             )
@@ -529,6 +743,11 @@ def main():
         help="审查通过后自动合并",
     )
     parser.add_argument(
+        "--review-backend",
+        default="codex",
+        help="Review backend: codex/claude",
+    )
+    parser.add_argument(
         "--parallel",
         action="store_true",
         help="启用并发模式",
@@ -591,6 +810,7 @@ def main():
         results = batch_review_parallel(
             items=open_items,
             auto_merge=args.auto_merge,
+            review_backend=args.review_backend,
             max_retries=args.max_retries,
             max_workers=args.max_workers,
             verbose=args.verbose,
@@ -599,6 +819,7 @@ def main():
         results = batch_review_serial(
             items=open_items,
             auto_merge=args.auto_merge,
+            review_backend=args.review_backend,
             max_retries=args.max_retries,
             verbose=args.verbose,
         )
