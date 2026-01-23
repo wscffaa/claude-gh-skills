@@ -713,7 +713,7 @@ class Autopilot:
 
     def _invoke_skill_project_pr(self, project_number: int) -> dict:
         """调用 /gh-project-pr (batch_review.py)"""
-        self._log(f"   (调用 /gh-project-pr {project_number} --auto-merge)")
+        self._log(f"   (调用 /gh-project-pr {project_number} --auto-merge --review-backend codex)")
 
         # 使用 batch_review.py 替代 main.py（main.py 的 Phase 4-6 未实现）
         # batch_review.py 需要 --input 参数指定 JSON 文件
@@ -726,13 +726,25 @@ class Autopilot:
                 sorted_items = []
 
                 for result in issue_results:
-                    if result.pr_number:
+                    # state.issue_results 在持久化后为 dict；测试/Mock 可能为 IssueResult
+                    if isinstance(result, dict):
+                        pr_number = result.get("pr_number")
+                        issue_number = result.get("number")
+                        status = result.get("status")
+                        title = result.get("title") or ""
+                    else:
+                        pr_number = getattr(result, "pr_number", None)
+                        issue_number = getattr(result, "number", None)
+                        status = getattr(result, "status", None)
+                        title = getattr(result, "title", "") or ""
+
+                    if pr_number:
                         sorted_items.append({
-                            "issue": result.number,
-                            "pr": result.pr_number,
-                            "state": "open" if result.status == "completed" else "closed",
+                            "issue": issue_number,
+                            "pr": pr_number,
+                            "state": "open" if status == "completed" else "closed",
                             "priority": "p1",  # 默认优先级
-                            "title": result.title,
+                            "title": title,
                         })
 
                 if not sorted_items:
@@ -756,6 +768,7 @@ class Autopilot:
                         "python3", str(script_path),
                         "--input", input_file,
                         "--auto-merge",
+                        "--review-backend", "codex",
                     ]
 
                     result = subprocess.run(
@@ -764,6 +777,26 @@ class Autopilot:
                         text=True,
                         timeout=3600,  # 1 hour
                     )
+
+                    # 兼容旧版本 batch_review.py：不支持 --review-backend 时自动回退
+                    if (
+                        result.returncode != 0
+                        and result.stderr
+                        and "--review-backend" in result.stderr
+                        and ("unrecognized arguments" in result.stderr or "unknown option" in result.stderr)
+                    ):
+                        self._log("   ⚠️ batch_review 不支持 --review-backend，回退到旧接口")
+                        legacy_args = [
+                            "python3", str(script_path),
+                            "--input", input_file,
+                            "--auto-merge",
+                        ]
+                        result = subprocess.run(
+                            legacy_args,
+                            capture_output=True,
+                            text=True,
+                            timeout=3600,  # 1 hour
+                        )
 
                     if result.returncode == 0 or result.stdout:
                         # 解析 batch_review.py 的 JSON 输出
@@ -893,5 +926,5 @@ def main():
     sys.exit(autopilot.run())
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     main()

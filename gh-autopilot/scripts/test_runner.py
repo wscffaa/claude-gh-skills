@@ -625,7 +625,7 @@ def parse_dev_plan_tests(dev_plan_path: str) -> List[TestStep]:
     return runner.parse_test_plan(content)
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     import argparse
 
     parser = argparse.ArgumentParser(description="Test Runner for gh-autopilot")

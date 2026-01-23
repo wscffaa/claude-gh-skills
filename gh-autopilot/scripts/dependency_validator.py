@@ -502,7 +502,7 @@ def validate_dependencies(fail_fast: bool = True) -> ValidationResult:
     return validator.validate_all(fail_fast=fail_fast)
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     # 测试验证器
     import sys
 

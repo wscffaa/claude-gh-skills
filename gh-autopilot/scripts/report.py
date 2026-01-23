@@ -197,7 +197,7 @@ def generate_report(state_manager: StateManager, format: str = "text") -> str:
     return generator.generate()
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     # 测试报告生成
     from state import AutopilotState, IssueResult
 

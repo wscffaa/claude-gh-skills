@@ -593,7 +593,7 @@ def get_state_manager(state_path: Optional[str] = None) -> StateManager:
     return StateManager(state_path)
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     # 测试状态管理
     manager = StateManager("/tmp/test-autopilot-state.json")
 
