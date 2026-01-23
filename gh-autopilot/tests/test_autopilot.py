@@ -16,8 +16,8 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock
 
-# 添加当前目录到路径
-sys.path.insert(0, str(Path(__file__).parent))
+# 添加 scripts 目录到路径
+sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
 from state import (
     StateManager,
@@ -710,7 +710,7 @@ class TestAutopilotInvokeSkills(unittest.TestCase):
         with patch('subprocess.run') as mock_run:
             mock_run.return_value = Mock(
                 returncode=0,
-                stdout='{"project_number": 5}'
+                stdout=json.dumps({"project": {"number": 5}})
             )
             with patch('pathlib.Path.exists', return_value=True):
                 result = autopilot._invoke_skill_project_sync()
@@ -727,15 +727,29 @@ class TestAutopilotInvokeSkills(unittest.TestCase):
     def test_invoke_skill_project_implement_success(self):
         """测试调用 Project 实现技能成功"""
         autopilot = Autopilot("test")
-        mock_result = {"results": [{"issue_number": 1, "status": "success"}]}
+        # batch_executor.py 输出为文本报告，autopilot 会从 stdout 解析执行结果
+        stdout = "✅ Issue #1 已完成，PR #10 已合并 (耗时 1m30s)\n"
         with patch('subprocess.run') as mock_run:
             mock_run.return_value = Mock(
                 returncode=0,
-                stdout=json.dumps(mock_result)
+                stdout=stdout
             )
             with patch('pathlib.Path.exists', return_value=True):
                 result = autopilot._invoke_skill_project_implement(1)
-                self.assertEqual(result, mock_result)
+                self.assertEqual(
+                    result,
+                    {
+                        "results": [
+                            {
+                                "issue_number": 1,
+                                "title": "",
+                                "status": "completed",
+                                "pr_number": 10,
+                                "error": None,
+                            }
+                        ]
+                    },
+                )
 
     def test_invoke_skill_project_pr(self):
         """测试调用 Project PR 技能"""
@@ -748,15 +762,25 @@ class TestAutopilotInvokeSkills(unittest.TestCase):
     def test_invoke_skill_project_pr_success(self):
         """测试调用 Project PR 技能成功"""
         autopilot = Autopilot("test")
-        mock_result = {"merged": [10], "failed": []}
+        # 需要在 state 中提供带 PR 的 issue_results，否则会直接返回空结果
+        autopilot.state_manager.state.issue_results = [
+            {"number": 1, "title": "Test", "status": "completed", "pr_number": 10},
+        ]
+
+        batch_review_output = {
+            "results": [
+                {"issue": 1, "pr": 10, "status": "merged", "error": None},
+            ],
+            "summary": {"total": 1, "merged": 1, "failed": 0},
+        }
         with patch('subprocess.run') as mock_run:
             mock_run.return_value = Mock(
                 returncode=0,
-                stdout=json.dumps(mock_result)
+                stdout=json.dumps(batch_review_output)
             )
             with patch('pathlib.Path.exists', return_value=True):
                 result = autopilot._invoke_skill_project_pr(1)
-                self.assertEqual(result, mock_result)
+                self.assertEqual(result, {"merged": [10], "failed": []})
 
 
 class TestAutopilotRun(unittest.TestCase):

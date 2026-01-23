@@ -355,6 +355,52 @@ class TestBatchReviewInterface(unittest.TestCase):
     @patch("os.unlink")
     @patch("subprocess.run")
     @patch.object(Path, "exists", return_value=True)
+    def test_batch_review_uses_review_backend_codex(self, mock_exists, mock_run, mock_unlink):
+        """Verify batch_review.py is called with --review-backend codex argument."""
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout=json.dumps({"results": [], "summary": {}}),
+            stderr="",
+        )
+
+        _ = self.autopilot._invoke_skill_project_pr(1)
+
+        call_args = mock_run.call_args[0][0]
+        self.assertIn("--review-backend", call_args)
+        idx = call_args.index("--review-backend")
+        self.assertEqual(call_args[idx + 1], "codex")
+
+    @patch("os.unlink")
+    @patch("subprocess.run")
+    @patch.object(Path, "exists", return_value=True)
+    def test_batch_review_fallback_when_review_backend_unsupported(self, mock_exists, mock_run, mock_unlink):
+        """Verify autopilot falls back when batch_review.py doesn't support --review-backend."""
+        mock_run.side_effect = [
+            MagicMock(
+                returncode=2,
+                stdout="",
+                stderr="error: unrecognized arguments: --review-backend codex",
+            ),
+            MagicMock(
+                returncode=0,
+                stdout=json.dumps({"results": [], "summary": {}}),
+                stderr="",
+            ),
+        ]
+
+        _ = self.autopilot._invoke_skill_project_pr(1)
+
+        self.assertEqual(mock_run.call_count, 2)
+
+        first_args = mock_run.call_args_list[0][0][0]
+        self.assertIn("--review-backend", first_args)
+
+        second_args = mock_run.call_args_list[1][0][0]
+        self.assertNotIn("--review-backend", second_args)
+
+    @patch("os.unlink")
+    @patch("subprocess.run")
+    @patch.object(Path, "exists", return_value=True)
     def test_batch_review_not_using_project_arg(self, mock_exists, mock_run, mock_unlink):
         """Verify batch_review.py is NOT called with --project argument (main.py style)."""
         mock_run.return_value = MagicMock(
