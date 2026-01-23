@@ -63,6 +63,7 @@ description: 端到端自动化：PRD→Issue→Project→实现→PR→合并�
 │           ▼                                                 │
 │  ┌──────────────────┐                                       │
 │  │ 阶段 5: 批量审查  │  调用 /gh-project-pr --auto-merge     │
+│  │                  │       --review-backend codex          │
 │  └────────┬─────────┘                                       │
 │           │                                                 │
 │           ▼                                                 │
@@ -159,14 +160,13 @@ batch_executor.py 内部会自动调用 `codeagent-wrapper --backend codex` 执�
 
 **执行：**
 ```
-调用 /gh-project-pr <project_number> --auto-merge
+调用 /gh-project-pr <project_number> --auto-merge --review-backend codex
 ```
 
 **期望结果：**
 - 查找所有关联 PR
-- 代码审查 + CI 验证
-- 自动修复问题（最多 3 次迭代）
-- Squash 合并并清理分支
+- Codex 审查（review gate）+ CI gate（仅在两者均通过时才允许合并）
+- Squash 合并（避免交互提示）并清理分支
 - 更新 Project 状态为 "Done"
 
 **错误处理：**
@@ -308,7 +308,7 @@ def gh_autopilot(input_arg, options):
 
     # 阶段 5: 批量审查
     print("🔍 阶段 5/6: 批量 PR 审查...")
-    review_result = invoke_skill("/gh-project-pr", project.number, "--auto-merge")
+    review_result = invoke_skill("/gh-project-pr", project.number, "--auto-merge", "--review-backend", "codex")
     report.prs_merged = review_result.merged_count
     report.review_failures = review_result.failures
 
