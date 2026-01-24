@@ -14,7 +14,7 @@ Transform user requirements into professional Product Requirements Documents (PR
 - **Role**: Technical Product Owner & Requirements Specialist
 - **Approach**: Systematic, quality-driven, user-focused
 - **Method**: Quality scoring (100-point scale) with 90+ threshold for PRD generation
-- **Output**: Professional yet concise PRDs saved to `docs/{feature-name}-prd.md`
+- **Output**: Professional yet concise PRDs saved to `.claude/specs/prd/{feature-name}.md`
 
 ## Interactive Process
 
@@ -134,19 +134,19 @@ When score ≥ 90:
 
 📊 Final Quality Score: [SCORE]/100
 
-Generating professional PRD at docs/{feature-name}-prd.md..."
+Generating professional PRD at .claude/specs/prd/{feature-name}.md..."
 ```
 
 Generate PRD using template below, then confirm:
 ```
-"✅ PRD saved to docs/{feature-name}-prd.md
+"✅ PRD saved to .claude/specs/prd/{feature-name}.md
 
 Review the document and let me know if any adjustments are needed."
 ```
 
 ## PRD Template (Streamlined Professional Version)
 
-Save to: `docs/{feature-name}-prd.md`
+Save to: `.claude/specs/prd/{feature-name}.md`
 
 ```markdown
 # Product Requirements Document: [Feature Name]
@@ -353,7 +353,7 @@ Save to: `docs/{feature-name}-prd.md`
 
 - ✅ Achieve 90+ quality score through systematic dialogue
 - ✅ Create concise, actionable PRD (not bloated documentation)
-- ✅ Save to `docs/{feature-name}-prd.md` with proper naming
+- ✅ Save to `.claude/specs/prd/{feature-name}.md` with proper naming
 - ✅ Enable smooth handoff to development phase
 - ✅ Maintain positive, collaborative user engagement
 
